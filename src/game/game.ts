@@ -103,6 +103,8 @@ export class Game {
   createName = '';
   createClassIdx = 0;
   nameInputCb: ((show: boolean, current: string) => void) | null = null;
+  saveHandler: ((player: PlayerState) => void) | null = null;
+  persistedPlayer: Partial<PlayerState> | null = null;
   dialog: { lines: { who: string; text: string }[]; idx: number; onDone?: () => void } | null = null;
   shop: { idx: number } | null = null;
   menuOpen = false;
@@ -341,25 +343,34 @@ export class Game {
   }
 
   // ---------- save/load ----------
+  setSaveHandler(cb: ((player: PlayerState) => void) | null) {
+    this.saveHandler = cb;
+  }
+
+  setPersistedPlayer(player: Partial<PlayerState> | null) {
+    this.persistedPlayer = player ? { ...player } : null;
+  }
+
   save() {
-    try {
-      localStorage.setItem('dso_save', JSON.stringify(this.player));
-    } catch { /* ignore */ }
+    this.player.x = this.px;
+    this.player.y = this.py;
+    const snapshot = JSON.parse(JSON.stringify(this.player)) as PlayerState;
+    this.persistedPlayer = snapshot;
+    this.saveHandler?.(snapshot);
   }
+
   hasSave(): boolean {
-    try { return !!localStorage.getItem('dso_save'); } catch { return false; }
+    return !!this.persistedPlayer;
   }
+
   load(): boolean {
-    try {
-      const raw = localStorage.getItem('dso_save');
-      if (!raw) return false;
-      const p = JSON.parse(raw) as PlayerState;
-      this.player = { ...this.newPlayer(), ...p };
-      this.px = p.x || this.px;
-      this.py = p.y || this.py;
-      this.refreshBalls();
-      return true;
-    } catch { return false; }
+    if (!this.persistedPlayer) return false;
+    const p = this.persistedPlayer;
+    this.player = { ...this.newPlayer(), ...p };
+    this.px = typeof p.x === 'number' && p.x > 0 ? p.x : this.px;
+    this.py = typeof p.y === 'number' && p.y > 0 ? p.y : this.py;
+    this.refreshBalls();
+    return true;
   }
 
   // ---------- main loop ----------
@@ -1204,6 +1215,8 @@ export class Game {
         const c = this.cls();
         this.player.hp = c.hp; this.player.ki = c.ki;
         this.state = 'world';
+        this.player.x = this.px; this.player.y = this.py;
+        this.save();
         chip.playSong('town');
         this.showDialog([
           { who: 'Mestre Kame', text: `Bem-vindo ao Dragon Saga Online, ${this.player.name}!` },
@@ -1316,7 +1329,8 @@ export class Game {
   // DOM callbacks (set by React page)
   setNameInputCb(cb: (show: boolean, current: string) => void) { this.nameInputCb = cb; }
   confirmName(name: string) {
-    this.createName = name.trim().slice(0, 12) || 'Guerreiro';
+    const cleaned = name.trim().slice(0, 12);
+    this.createName = cleaned.length >= 2 ? cleaned : 'Guerreiro';
     this.player.name = this.createName;
     this.createStep = 'class';
     this.nameInputCb?.(false, '');
