@@ -1,6 +1,8 @@
 const SUPABASE_URL =
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
   'https://jxrsdacpywpnnpamgpbd.supabase.co';
 const SUPABASE_PUBLISHABLE_KEY =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
   'sb_publishable_ZgUaQI6V4csnzsg__DCtUg_8XpaQQuH';
 
 const SESSION_STORAGE_KEY = 'dso_supabase_session_v1';
