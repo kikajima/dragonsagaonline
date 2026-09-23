@@ -14,6 +14,13 @@ import {
   type CharacterRow,
   type DsoSession,
 } from '@/lib/supabase';
+import {
+  connectMultiplayer,
+  type MultiplayerConnection,
+  type MultiplayerStatus,
+} from '@/lib/multiplayer';
+
+const COLYSEUS_URL = process.env.NEXT_PUBLIC_COLYSEUS_URL?.trim() || '';
 
 function characterToPlayer(row: CharacterRow): Partial<PlayerState> {
   const state = (row.state || {}) as Partial<PlayerState>;
@@ -67,10 +74,16 @@ export default function Home() {
   const [authMessage, setAuthMessage] = useState('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
+  const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null);
+  const [multiplayerStatus, setMultiplayerStatus] = useState<MultiplayerStatus>(
+    COLYSEUS_URL ? 'offline' : 'disabled',
+  );
+  const [multiplayerMessage, setMultiplayerMessage] = useState('');
 
   const sessionRef = useRef<DsoSession | null>(null);
   const characterRef = useRef<CharacterRow | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const multiplayerRef = useRef<MultiplayerConnection | null>(null);
 
   const loadAccount = useCallback(async (nextSession: DsoSession) => {
     sessionRef.current = nextSession;
@@ -79,9 +92,11 @@ export default function Home() {
     try {
       const characters = await listCharacters();
       characterRef.current = characters[0] || null;
+      setActiveCharacterId(characterRef.current?.id || null);
     } catch (error) {
       console.error('[supabase] load characters', error);
       characterRef.current = null;
+      setActiveCharacterId(null);
       setAuthMessage(error instanceof Error ? error.message : 'Não foi possível carregar o personagem.');
     }
 
@@ -106,6 +121,7 @@ export default function Home() {
           : await createCharacter(payload);
 
         characterRef.current = saved;
+        setActiveCharacterId(saved.id);
         setSaveStatus('saved');
       })
       .catch((error) => {
@@ -167,12 +183,18 @@ export default function Home() {
 
   const handleSignOut = useCallback(async () => {
     await saveQueueRef.current.catch(() => undefined);
+    await multiplayerRef.current?.leave().catch(() => undefined);
+    multiplayerRef.current = null;
+    gameRef.current?.setMultiplayerActive(false);
     gameRef.current?.stop();
     gameRef.current = null;
     characterRef.current = null;
     sessionRef.current = null;
     await signOut();
     setSession(null);
+    setActiveCharacterId(null);
+    setMultiplayerStatus(COLYSEUS_URL ? 'offline' : 'disabled');
+    setMultiplayerMessage('');
     setSaveStatus('idle');
     setSaveError('');
     setAuthPassword('');
@@ -263,6 +285,104 @@ export default function Home() {
     };
   }, [authReady, session?.user.id, persistPlayer]);
 
+  useEffect(() => {
+    if (!authReady || !session || !activeCharacterId) return;
+
+    const game = gameRef.current;
+    if (!game) return;
+
+    if (!COLYSEUS_URL) {
+      game.setMultiplayerActive(false);
+      setMultiplayerStatus('disabled');
+      setMultiplayerMessage('');
+      return;
+    }
+
+    let cancelled = false;
+    let movementTimer: ReturnType<typeof setInterval> | null = null;
+
+    setMultiplayerStatus('connecting');
+    setMultiplayerMessage('');
+
+    void connectMultiplayer({
+      endpoint: COLYSEUS_URL,
+      accessToken: session.access_token,
+      characterId: activeCharacterId,
+      callbacks: {
+        onStatus(status, message) {
+          if (cancelled) return;
+          setMultiplayerStatus(status);
+          setMultiplayerMessage(message || '');
+          game.setMultiplayerActive(status === 'online');
+        },
+        onSnapshot(players) {
+          if (!cancelled) game.setRemoteSnapshot(players);
+        },
+        onPlayerJoined(player) {
+          if (!cancelled) game.upsertRemotePlayer(player);
+        },
+        onPlayerMoved(player) {
+          if (!cancelled) game.upsertRemotePlayer(player);
+        },
+        onPlayerLeft(sessionId) {
+          if (!cancelled) game.removeRemotePlayer(sessionId);
+        },
+        onChat(message) {
+          if (!cancelled) game.receiveRemoteChat(message);
+        },
+        onPresence(count) {
+          if (!cancelled) game.setOnlineCount(count);
+        },
+      },
+    })
+      .then((connection) => {
+        if (cancelled) {
+          void connection.leave();
+          return;
+        }
+
+        multiplayerRef.current = connection;
+        game.setMultiplayerActive(true);
+        setMultiplayerStatus('online');
+
+        connection.sendMove(game.px, game.py, game.pdir);
+
+        movementTimer = setInterval(() => {
+          const activeGame = gameRef.current;
+          const activeConnection = multiplayerRef.current;
+          if (!activeGame || !activeConnection || activeGame.state !== 'world') return;
+
+          activeConnection.sendMove(
+            activeGame.px,
+            activeGame.py,
+            activeGame.pdir,
+          );
+        }, 100);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error('[colyseus] connect', error);
+        game.setMultiplayerActive(false);
+        setMultiplayerStatus('error');
+        setMultiplayerMessage(
+          error instanceof Error ? error.message : 'Falha ao conectar ao mundo online.',
+        );
+      });
+
+    return () => {
+      cancelled = true;
+      if (movementTimer) clearInterval(movementTimer);
+
+      const connection = multiplayerRef.current;
+      multiplayerRef.current = null;
+      game.setMultiplayerActive(false);
+
+      if (connection) {
+        void connection.leave().catch(() => undefined);
+      }
+    };
+  }, [authReady, session?.access_token, activeCharacterId]);
+
   // Stop the game loop only on final unmount (survives Fast Refresh / StrictMode re-runs)
   useEffect(() => {
     return () => {
@@ -274,11 +394,19 @@ export default function Home() {
   const sendChat = useCallback(() => {
     const g = gameRef.current;
     if (!g) return;
-    if (chatVal.trim()) g.sendChat(chatVal);
+
+    const text = chatVal.trim();
+    if (text) {
+      g.sendChat(text);
+      if (multiplayerStatus === 'online') {
+        multiplayerRef.current?.sendChat(text);
+      }
+    }
+
     setChatVal('');
     setShowChat(false);
     chatInputRef.current?.blur();
-  }, [chatVal]);
+  }, [chatVal, multiplayerStatus]);
 
   const confirmName = useCallback(() => {
     const g = gameRef.current;
@@ -413,6 +541,29 @@ export default function Home() {
               : saveStatus === 'error'
                 ? 'ERRO NO SAVE'
                 : session.user.email || 'CONTA DSO'}
+        </span>
+        <span
+          title={multiplayerMessage || undefined}
+          style={{
+            fontFamily: '"Press Start 2P", monospace',
+            fontSize: 6,
+            color:
+              multiplayerStatus === 'online'
+                ? '#88f0a0'
+                : multiplayerStatus === 'connecting'
+                  ? '#f8d030'
+                  : '#788098',
+          }}
+        >
+          {multiplayerStatus === 'online'
+            ? 'MUNDO ONLINE'
+            : multiplayerStatus === 'connecting'
+              ? 'CONECTANDO...'
+              : multiplayerStatus === 'error'
+                ? 'ONLINE INDISPONÍVEL'
+                : multiplayerStatus === 'disabled'
+                  ? 'MODO SOLO'
+                  : 'OFFLINE'}
         </span>
         <button
           onClick={() => void handleSignOut()}
