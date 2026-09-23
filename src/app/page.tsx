@@ -1,8 +1,53 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Game, VW, VH } from '@/game/game';
+import { Game, VW, VH, type PlayerState } from '@/game/game';
 import { chip } from '@/game/audio';
+import {
+  createCharacter,
+  listCharacters,
+  restoreSession,
+  signInWithPassword,
+  signOut,
+  signUpWithPassword,
+  updateCharacter,
+  type CharacterRow,
+  type DsoSession,
+} from '@/lib/supabase';
+
+function characterToPlayer(row: CharacterRow): Partial<PlayerState> {
+  const state = (row.state || {}) as Partial<PlayerState>;
+  return {
+    ...state,
+    name: row.name,
+    classId: row.class_id,
+    lv: row.level,
+    exp: Number(row.xp),
+    hp: row.hp,
+    ki: row.ki,
+    zeni: Number(row.gold),
+    x: row.x,
+    y: row.y,
+  };
+}
+
+function playerPayload(userId: string, player: PlayerState) {
+  return {
+    user_id: userId,
+    name: player.name,
+    class_id: player.classId,
+    level: player.lv,
+    xp: player.exp,
+    hp: player.hp,
+    ki: player.ki,
+    gold: player.zeni,
+    map_id: 'world',
+    x: player.x,
+    y: player.y,
+    state: player as unknown as Record<string, unknown>,
+    last_played_at: new Date().toISOString(),
+  };
+}
 
 export default function Home() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -13,9 +58,129 @@ export default function Home() {
   const [showName, setShowName] = useState(false);
   const [nameVal, setNameVal] = useState('');
   const [chatVal, setChatVal] = useState('');
+  const [authReady, setAuthReady] = useState(false);
+  const [session, setSession] = useState<DsoSession | null>(null);
+  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState('');
+
+  const sessionRef = useRef<DsoSession | null>(null);
+  const characterRef = useRef<CharacterRow | null>(null);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  const loadAccount = useCallback(async (nextSession: DsoSession) => {
+    sessionRef.current = nextSession;
+    setAuthMessage('');
+
+    try {
+      const characters = await listCharacters();
+      characterRef.current = characters[0] || null;
+    } catch (error) {
+      console.error('[supabase] load characters', error);
+      characterRef.current = null;
+      setAuthMessage(error instanceof Error ? error.message : 'Não foi possível carregar o personagem.');
+    }
+
+    setSession(nextSession);
+  }, []);
+
+  const persistPlayer = useCallback((player: PlayerState) => {
+    const activeSession = sessionRef.current;
+    if (!activeSession) return;
+
+    const snapshot = JSON.parse(JSON.stringify(player)) as PlayerState;
+    setSaveStatus('saving');
+    setSaveError('');
+
+    saveQueueRef.current = saveQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const payload = playerPayload(activeSession.user.id, snapshot);
+        const current = characterRef.current;
+        const saved = current
+          ? await updateCharacter(current.id, payload)
+          : await createCharacter(payload);
+
+        characterRef.current = saved;
+        setSaveStatus('saved');
+      })
+      .catch((error) => {
+        console.error('[supabase] save character', error);
+        setSaveStatus('error');
+        setSaveError(error instanceof Error ? error.message : 'Erro ao salvar na nuvem.');
+      });
+  }, []);
 
   useEffect(() => {
-    if (!canvasRef.current) return;
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const restored = await restoreSession();
+        if (cancelled) return;
+        if (restored) await loadAccount(restored);
+      } catch (error) {
+        console.error('[supabase] restore session', error);
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadAccount]);
+
+  const handleAuthSubmit = useCallback(async () => {
+    const email = authEmail.trim().toLowerCase();
+    if (!email || authPassword.length < 6) {
+      setAuthMessage('Informe um e-mail válido e uma senha com pelo menos 6 caracteres.');
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('');
+
+    try {
+      if (authMode === 'login') {
+        const nextSession = await signInWithPassword(email, authPassword);
+        await loadAccount(nextSession);
+      } else {
+        const result = await signUpWithPassword(email, authPassword);
+        if (result.session) {
+          await loadAccount(result.session);
+        } else {
+          setAuthMessage('Conta criada. Confira seu e-mail para confirmar o cadastro e depois entre no jogo.');
+          setAuthMode('login');
+        }
+      }
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : 'Falha na autenticação.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }, [authEmail, authMode, authPassword, loadAccount]);
+
+  const handleSignOut = useCallback(async () => {
+    await saveQueueRef.current.catch(() => undefined);
+    gameRef.current?.stop();
+    gameRef.current = null;
+    characterRef.current = null;
+    sessionRef.current = null;
+    await signOut();
+    setSession(null);
+    setSaveStatus('idle');
+    setSaveError('');
+    setAuthPassword('');
+    setAuthMessage('');
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !session || !canvasRef.current) return;
     if (!gameRef.current) {
       const game = new Game(canvasRef.current);
       gameRef.current = game;
@@ -28,6 +193,12 @@ export default function Home() {
           setTimeout(() => nameInputRef.current?.focus(), 50);
         }
       });
+
+      game.setSaveHandler(persistPlayer);
+      const cloudCharacter = characterRef.current;
+      if (cloudCharacter) {
+        game.setPersistedPlayer(characterToPlayer(cloudCharacter));
+      }
 
       game.start();
 
@@ -90,7 +261,7 @@ export default function Home() {
       window.removeEventListener('touchend', onTouchEnd);
       canvasRef.current?.removeEventListener('touchstart', onTouchStart as EventListener);
     };
-  }, []);
+  }, [authReady, session?.user.id, persistPlayer]);
 
   // Stop the game loop only on final unmount (survives Fast Refresh / StrictMode re-runs)
   useEffect(() => {
@@ -115,8 +286,150 @@ export default function Home() {
     g.confirmName(nameVal);
   }, [nameVal]);
 
+  if (!authReady) {
+    return (
+      <main className="min-h-screen w-full flex items-center justify-center bg-black">
+        <p style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 10, color: '#f8d030' }}>
+          CONECTANDO AO DSO...
+        </p>
+      </main>
+    );
+  }
+
+  if (!session) {
+    return (
+      <main className="min-h-screen w-full flex items-center justify-center bg-black p-4">
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            void handleAuthSubmit();
+          }}
+          className="w-full max-w-md flex flex-col gap-4 p-6"
+          style={{ background: '#101828', border: '3px solid #f8d030' }}
+        >
+          <div className="text-center">
+            <h1 style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 18, color: '#f8d030', lineHeight: 1.5 }}>
+              DRAGON SAGA ONLINE
+            </h1>
+            <p className="mt-3" style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 8, color: '#a8b0c0', lineHeight: 1.8 }}>
+              {authMode === 'login' ? 'ENTRE NA SUA CONTA' : 'CRIE SUA CONTA'}
+            </p>
+          </div>
+
+          <input
+            type="email"
+            autoComplete="email"
+            value={authEmail}
+            onChange={(event) => setAuthEmail(event.target.value)}
+            placeholder="E-MAIL"
+            required
+            className="outline-none"
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 9,
+              color: '#fff',
+              background: '#05070d',
+              border: '2px solid #585878',
+              padding: '12px',
+            }}
+          />
+
+          <input
+            type="password"
+            autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+            value={authPassword}
+            onChange={(event) => setAuthPassword(event.target.value)}
+            placeholder="SENHA"
+            minLength={6}
+            required
+            className="outline-none"
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 9,
+              color: '#fff',
+              background: '#05070d',
+              border: '2px solid #585878',
+              padding: '12px',
+            }}
+          />
+
+          {authMessage && (
+            <p style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: '#f8a0a0', lineHeight: 1.8 }}>
+              {authMessage}
+            </p>
+          )}
+
+          <button
+            type="submit"
+            disabled={authBusy}
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 9,
+              color: '#101828',
+              background: '#f8d030',
+              border: 'none',
+              padding: '12px',
+              cursor: authBusy ? 'wait' : 'pointer',
+              opacity: authBusy ? 0.7 : 1,
+            }}
+          >
+            {authBusy ? 'AGUARDE...' : authMode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setAuthMode(authMode === 'login' ? 'signup' : 'login');
+              setAuthMessage('');
+            }}
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 7,
+              color: '#88c8f8',
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '8px',
+            }}
+          >
+            {authMode === 'login' ? 'NÃO TENHO CONTA' : 'JÁ TENHO CONTA'}
+          </button>
+        </form>
+      </main>
+    );
+  }
+
   return (
     <main className="min-h-screen w-full flex flex-col items-center justify-center bg-black overflow-hidden p-1 sm:p-3">
+      <div
+        className="fixed right-2 top-2 z-50 flex items-center gap-2 rounded px-2 py-2"
+        style={{ background: 'rgba(5,7,13,0.92)', border: '1px solid #343a54' }}
+      >
+        <span style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 6, color: '#a8b0c0' }}>
+          {saveStatus === 'saving'
+            ? 'SALVANDO...'
+            : saveStatus === 'saved'
+              ? 'SALVO NA NUVEM'
+              : saveStatus === 'error'
+                ? 'ERRO NO SAVE'
+                : session.user.email || 'CONTA DSO'}
+        </span>
+        <button
+          onClick={() => void handleSignOut()}
+          title={saveError || 'Sair da conta'}
+          style={{
+            fontFamily: '"Press Start 2P", monospace',
+            fontSize: 6,
+            color: '#f8d030',
+            background: 'transparent',
+            border: '1px solid #585878',
+            padding: '6px',
+            cursor: 'pointer',
+          }}
+        >
+          SAIR
+        </button>
+      </div>
       <div
         className="relative w-full"
         style={{ maxWidth: VW, aspectRatio: `${VW}/${VH}` }}
