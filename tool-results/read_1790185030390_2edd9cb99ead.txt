@@ -1,0 +1,747 @@
+     1→// Turn-based battle system (SNES side-view style)
+     2→import { SKILLS, ITEMS, type EnemyDef } from './data';
+     3→import { chip } from './audio';
+     4→import { getEnemyArt, getEffectSprites } from './enemySprites';
+     5→import { getCharFrames, getPortrait } from './charSprites';
+     6→import { panel, pText, pTextC } from './pixel';
+     7→
+     8→export interface Fighter {
+     9→  id: string;
+    10→  name: string;
+    11→  side: 'party' | 'enemy';
+    12→  enemyId?: string;
+    13→  styleKey?: string;
+    14→  lv: number;
+    15→  hp: number; maxHp: number;
+    16→  ki: number; maxKi: number;
+    17→  atk: number; def: number; spd: number;
+    18→  skills: string[];
+    19→  alive: boolean;
+    20→  defending: boolean;
+    21→  buffed: boolean;
+    22→  transformed?: boolean;
+    23→  pl?: number;
+    24→  drop?: { id: string; chance: number };
+    25→  exp: number;
+    26→  zeni: number;
+    27→}
+    28→
+    29→export interface Anim {
+    30→  kind: 'dash' | 'blast' | 'beam' | 'heal' | 'wind' | 'enemyblast' | 'transform' | 'star';
+    31→  from?: Fighter;
+    32→  to?: Fighter;
+    33→  t: number;
+    34→  dur: number;
+    35→  done?: boolean;
+    36→  hits?: number;
+    37→  onHit?: () => void;
+    38→}
+    39→
+    40→export type BattleMsg = { text: string; t: number };
+    41→
+    42→export type BattleResult = { win: boolean; fled: boolean; exp: number; zeni: number; drops: string[] } | null;
+    43→
+    44→export class Battle {
+    45→  party: Fighter[] = [];
+    46→  enemies: Fighter[] = [];
+    47→  msgs: BattleMsg[] = [];
+    48→  queue: { actor: Fighter; action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform'; skillId?: string; itemId?: string; target?: Fighter }[] = [];
+    49→  currentIdx = -1; // index into turn order
+    50→  turnOrder: Fighter[] = [];
+    51→  phase: 'intro' | 'menu' | 'target' | 'skillmenu' | 'itemmenu' | 'anim' | 'msg' | 'end' | 'gameover' = 'intro';
+    52→  menuIdx = 0;
+    53→  subIdx = 0;
+    54→  pendingAction: 'attack' | 'skill' | 'item' | null = null;
+    55→  pendingSkillId: string | null = null;
+    56→  anim: Anim | null = null;
+    57→  shake = 0;
+    58→  flash = 0;
+    59→  result: BattleResult = null;
+    60→  isBoss = false;
+    61→  t = 0;
+    62→  menuTimer = 0;
+    63→  onEnd: ((r: BattleResult) => void) | null = null;
+    64→  goldFlash = 0;
+    65→  popups: { x: number; y: number; text: string; t: number; color: string }[] = [];
+    66→
+    67→  // screen position of enemy slot i (feet on ground)
+    68→  enemyPos(i: number, W: number, H: number): { x: number; y: number } {
+    69→    const slots = [
+    70→      { x: W - 280, dy: 0 },
+    71→      { x: W - 150, dy: 26 },
+    72→      { x: W - 400, dy: 44 },
+    73→    ];
+    74→    const s = slots[i % slots.length];
+    75→    const art = getEnemyArt(this.enemies[i]?.enemyId || 'saiba');
+    76→    return { x: s.x, y: H * 0.62 - art.h + s.dy };
+    77→  }
+    78→
+    79→  constructor(partyFighters: Fighter[], enemyDefs: EnemyDef[], isBoss = false) {
+    80→    this.party = partyFighters;
+    81→    this.enemies = enemyDefs.map((e) => ({
+    82→      id: e.id, name: e.name, side: 'enemy' as const, enemyId: e.id,
+    83→      lv: 1, hp: e.hp, maxHp: e.hp, ki: e.ki, maxKi: e.ki,
+    84→      atk: e.atk, def: e.def, spd: e.spd, skills: e.skill ? [e.skill] : [],
+    85→      alive: true, defending: false, buffed: false, pl: e.pl,
+    86→      drop: e.drop, exp: e.exp, zeni: e.zeni,
+    87→    }));
+    88→    this.isBoss = isBoss;
+    89→    const pl = this.enemies[0]?.pl;
+    90→    if (pl) this.pushMsg(`${this.enemies[0].name}! Nível de Poder: ${pl.toLocaleString('pt-BR')}!`, 0);
+    91→    else this.pushMsg(`${this.enemies.map((e) => e.name).join(' e ')} apareceu!`, 0);
+    92→    this.buildTurnOrder();
+    93→    chip.sfx('battlestart');
+    94→  }
+    95→
+    96→  pushMsg(text: string, dur = 1.4) {
+    97→    this.msgs.push({ text, t: dur });
+    98→    if (this.msgs.length > 4) this.msgs.shift();
+    99→  }
+   100→
+   101→  buildTurnOrder() {
+   102→    this.turnOrder = [...this.party.filter((f) => f.alive), ...this.enemies.filter((f) => f.alive)]
+   103→      .sort((a, b) => b.spd - a.spd + (Math.random() - 0.5) * 2);
+   104→    this.currentIdx = -1;
+   105→  }
+   106→
+   107→  // Advance to next actor and open menu / run enemy AI
+   108→  beginTurn() {
+   109→    const next = this.nextActor();
+   110→    if (!next) { this.win(); return; }
+   111→    if (next.side === 'party') {
+   112→      this.phase = 'menu';
+   113→      this.menuIdx = 0;
+   114→    } else {
+   115→      this.enemyAI(next);
+   116→    }
+   117→  }
+   118→
+   119→  // Get next actor, start of round builds new order
+   120→  nextActor(): Fighter | null {
+   121→    for (let i = 0; i < this.turnOrder.length; i++) {
+   122→      this.currentIdx++;
+   123→      if (this.currentIdx >= this.turnOrder.length) {
+   124→        this.buildTurnOrder();
+   125→        this.party.forEach((p) => { p.buffed = false; if (p.transformed) { p.ki -= 4; if (p.ki <= 0) { p.transformed = false; this.pushMsg('A Forma Super se desfez!', 1.2); } } });
+   126→        this.enemies.forEach((e) => { e.defending = false; });
+   127→        continue;
+   128→      }
+   129→      const f = this.turnOrder[this.currentIdx];
+   130→      if (f && f.alive && f.hp > 0) return f;
+   131→    }
+   132→    this.buildTurnOrder();
+   133→    return this.nextActor();
+   134→  }
+   135→
+   136→  playerCommand(action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform', skillId?: string, itemId?: string, target?: Fighter) {
+   137→    const actor = this.turnOrder[this.currentIdx];
+   138→    if (!actor) return;
+   139→    this.queue.push({ actor, action, skillId, itemId, target });
+   140→    this.phase = 'anim';
+   141→    this.resolveNext();
+   142→  }
+   143→
+   144→  private resolveNext() {
+   145→    const cmd = this.queue.shift();
+   146→    if (!cmd) {
+   147→      // check deaths / win / lose
+   148→      if (this.enemies.every((e) => !e.alive)) { this.win(); return; }
+   149→      if (this.party.every((p) => !p.alive)) { this.lose(); return; }
+   150→      this.beginTurn();
+   151→      return;
+   152→    }
+   153→    const { actor, action, skillId, itemId, target } = cmd;
+   154→    if (!actor || !actor.alive) { this.resolveNext(); return; }
+   155→    switch (action) {
+   156→      case 'attack': this.doAttack(actor, target || this.pickEnemyTarget(actor)); break;
+   157→      case 'skill': {
+   158→        const sk = SKILLS[skillId!];
+   159→        if (!sk) { this.resolveNext(); return; }
+   160→        if (actor.ki < sk.cost) { this.pushMsg('Ki insuficiente!', 1); this.phase = 'menu'; return; }
+   161→        actor.ki -= sk.cost;
+   162→        this.doSkill(actor, sk.id, target);
+   163→        break;
+   164→      }
+   165→      case 'item': this.doItem(actor, itemId!, target); break;
+   166→      case 'defend': actor.defending = true; this.pushMsg(`${actor.name} se defende!`, 0.9); this.finish(0.7); break;
+   167→      case 'transform': this.doTransform(actor); break;
+   168→      case 'flee': this.tryFlee(actor); break;
+   169→    }
+   170→  }
+   171→
+   172→  pickEnemyTarget(actor: Fighter): Fighter {
+   173→    const alive = this.enemies.filter((e) => e.alive);
+   174→    return alive[Math.floor(Math.random() * alive.length)] || alive[0];
+   175→  }
+   176→
+   177→  pickPartyTarget(): Fighter {
+   178→    const alive = this.party.filter((p) => p.alive);
+   179→    return alive[Math.floor(Math.random() * alive.length)];
+   180→  }
+   181→
+   182→  calcDamage(a: Fighter, d: Fighter, mult = 1): number {
+   183→    let atk = a.atk * (a.buffed ? 1.3 : 1) * (a.transformed ? 1.8 : 1);
+   184→    if (a.transformed) atk = a.atk * 1.8;
+   185→    const raw = atk * mult * (0.85 + Math.random() * 0.3) - d.def * (d.defending ? 1.6 : 1) * 0.5;
+   186→    return Math.max(1, Math.floor(raw));
+   187→  }
+   188→
+   189→  doAttack(a: Fighter, t: Fighter) {
+   190→    const crit = Math.random() < 0.1;
+   191→    const dmg = this.calcDamage(a, t) * (crit ? 1.8 : 1);
+   192→    this.anim = { kind: 'dash', from: a, to: t, t: 0, dur: 0.55 };
+   193→    this.pendingDamage = { target: t, dmg, crit };
+   194→    this.anim.onHit = () => {
+   195→      this.applyDamage(t, dmg, crit);
+   196→      this.finish(0.5);
+   197→    };
+   198→  }
+   199→
+   200→  pendingDamage: { target: Fighter; dmg: number; crit: boolean } | null = null;
+   201→
+   202→  doSkill(a: Fighter, skillId: string, target?: Fighter) {
+   203→    const sk = SKILLS[skillId];
+   204→    if (sk.kind === 'heal') {
+   205→      const t = target && target.side === 'party' ? target : a;
+   206→      const heal = Math.floor(a.ki * sk.power * 0.9 + a.atk * 0.5);
+   207→      this.anim = { kind: 'heal', from: a, to: t, t: 0, dur: 0.7 };
+   208→      this.anim.onHit = () => {
+   209→        t.hp = Math.min(t.maxHp, t.hp + heal);
+   210→        chip.sfx('heal');
+   211→        this.pushMsg(`${t.name} recuperou ${heal} HP!`, 1.1);
+   212→        this.finish(0.6);
+   213→      };
+   214→    } else if (sk.kind === 'buff') {
+   215→      this.party.forEach((p) => { if (p.alive) p.buffed = true; });
+   216→      chip.sfx('crit');
+   217→      this.pushMsg('O ATK do grupo aumentou!', 1.1);
+   218→      this.finish(0.8);
+   219→    } else if (sk.kind === 'dmgall' || sk.kind === 'multi') {
+   220→      const targets = sk.kind === 'dmgall' ? this.enemies.filter((e) => e.alive) : [this.pickEnemyTarget(a)];
+   221→      const hits = sk.kind === 'multi' ? 2 : 1;
+   222→      this.anim = { kind: sk.fx === 'wind' ? 'wind' : 'beam', from: a, to: targets[0], t: 0, dur: 0.8, hits };
+   223→      const dmgPer = targets.map((t) => this.calcDamage(a, t, sk.power));
+   224→      this.anim.onHit = () => {
+   225→        targets.forEach((t, i) => this.applyDamage(t, dmgPer[i], false));
+   226→        chip.sfx(sk.fx === 'wind' ? 'crit' : 'beam');
+   227→        this.finish(0.7);
+   228→      };
+   229→    } else {
+   230→      const t = target && target.side === 'enemy' && target.alive ? target : this.pickEnemyTarget(a);
+   231→      const dmg = this.calcDamage(a, t, sk.power);
+   232→      this.anim = { kind: sk.fx === 'beam' ? 'beam' : 'blast', from: a, to: t, t: 0, dur: 0.8 };
+   233→      this.anim.onHit = () => {
+   234→        this.applyDamage(t, dmg, false);
+   235→        chip.sfx(sk.fx === 'beam' ? 'beam' : 'ki');
+   236→        this.finish(0.6);
+   237→      };
+   238→    }
+   239→  }
+   240→
+   241→  doItem(a: Fighter, itemId: string, target?: Fighter) {
+   242→    const it = ITEMS[itemId];
+   243→    const inv = this.inventory!;
+   244→    if (!it || (inv.get(itemId) || 0) <= 0) { this.phase = 'menu'; return; }
+   245→    inv.set(itemId, (inv.get(itemId) || 0) - 1);
+   246→    const t = target && target.side === 'party' ? target : a;
+   247→    if (it.kind === 'heal') { t.hp = Math.min(t.maxHp, t.hp + (it.power || 0)); this.pushMsg(`${t.name} recuperou HP!`, 1); }
+   248→    else if (it.kind === 'kiheal') { t.ki = Math.min(t.maxKi, t.ki + (it.power || 0)); this.pushMsg(`${t.name} recuperou Ki!`, 1); }
+   249→    else if (it.kind === 'fullheal') { t.hp = t.maxHp; t.ki = t.maxKi; this.pushMsg(`${t.name} está totalmente restaurado!`, 1.1); }
+   250→    chip.sfx('item');
+   251→    this.finish(0.7);
+   252→  }
+   253→
+   254→  inventory: Map<string, number> | null = null;
+   255→
+   256→  doTransform(a: Fighter) {
+   257→    if (a.ki < 20) { this.pushMsg('Ki insuficiente para transformar!', 1); this.phase = 'menu'; return; }
+   258→    a.transformed = true;
+   259→    this.goldFlash = 1;
+   260→    chip.sfx('transform');
+   261→    this.shake = 0.6;
+   262→    this.anim = { kind: 'transform', from: a, t: 0, dur: 1.0 };
+   263→    this.anim.onHit = () => {
+   264→      this.pushMsg(`${a.name} se transformou! O poder explodiu!`, 1.4);
+   265→      this.finish(0.8);
+   266→    };
+   267→  }
+   268→
+   269→  tryFlee(a: Fighter) {
+   270→    if (this.isBoss) { this.pushMsg('Não dá para fugir desta batalha!', 1); this.phase = 'menu'; return; }
+   271→    if (Math.random() < 0.7) {
+   272→      chip.sfx('flee');
+   273→      this.pushMsg('O grupo fugiu!', 1);
+   274→      this.result = { win: false, fled: true, exp: 0, zeni: 0, drops: [] };
+   275→      this.phase = 'end';
+   276→      this.menuTimer = 1.2;
+   277→    } else {
+   278→      this.pushMsg('A fuga falhou!', 1);
+   279→      this.finish(0.8);
+   280→    }
+   281→  }
+   282→
+   283→  applyDamage(t: Fighter, dmg: number, crit: boolean) {
+   284→    t.hp -= dmg;
+   285→    this.shake = crit ? 0.4 : 0.25;
+   286→    chip.sfx(crit ? 'crit' : 'hit');
+   287→    this.pushMsg(crit ? `CRÍTICO! ${dmg} de dano em ${t.name}!` : `${t.name} levou ${dmg} de dano!`, 1.1);
+   288→    // damage popup
+   289→    if (t.side === 'enemy') {
+   290→      const idx = this.enemies.indexOf(t);
+   291→      const pos = this.enemyPos(idx, 960, 600);
+   292→      this.popups.push({ x: pos.x + 40, y: pos.y + 10, text: (crit ? '' : '') + dmg, t: 1.1, color: crit ? '#f8d030' : '#fff' });
+   293→    } else {
+   294→      const idx = this.party.indexOf(t);
+   295→      this.popups.push({ x: 80, y: 90 + idx * 66, text: '-' + dmg, t: 1.1, color: '#f06060' });
+   296→    }
+   297→    if (t.hp <= 0) {
+   298→      t.hp = 0;
+   299→      t.alive = false;
+   300→      t.transformed = false;
+   301→      chip.sfx('dead');
+   302→      this.pushMsg(`${t.name} foi derrotado!`, 1.2);
+   303→    }
+   304→  }
+   305→
+   306→  enemyAI(e: Fighter) {
+   307→    const alive = this.party.filter((p) => p.alive);
+   308→    if (alive.length === 0) { this.lose(); return; }
+   309→    const t = alive[Math.floor(Math.random() * alive.length)];
+   310→    // 35% chance to use skill if has ki
+   311→    if (e.skills.length && e.ki >= 12 && Math.random() < 0.4) {
+   312→      const sk = SKILLS[e.skills[0]];
+   313→      e.ki -= sk.cost;
+   314→      const dmg = this.calcDamage(e, t, sk.power);
+   315→      this.anim = { kind: 'enemyblast', from: e, to: t, t: 0, dur: 0.7 };
+   316→      this.anim.onHit = () => {
+   317→        this.applyDamage(t, dmg, false);
+   318→        chip.sfx('ki');
+   319→        this.finish(0.6);
+   320→      };
+   321→    } else {
+   322→      this.doAttack(e, t);
+   323→    }
+   324→  }
+   325→
+   326→  finish(delay: number) {
+   327→    this.phase = 'anim';
+   328→    this.finishDelay = delay;
+   329→  }
+   330→  finishDelay = 0;
+   331→
+   332→  win() {
+   333→    const exp = this.enemies.reduce((s, e) => s + e.exp, 0);
+   334→    const zeni = this.enemies.reduce((s, e) => s + e.zeni, 0);
+   335→    const drops: string[] = [];
+   336→    this.enemies.forEach((e) => {
+   337→      if (e.drop && Math.random() < e.drop.chance) drops.push(e.drop.id);
+   338→    });
+   339→    chip.sfx('levelup');
+   340→    this.pushMsg('Vitória!', 1.2);
+   341→    this.result = { win: true, fled: false, exp, zeni, drops };
+   342→    this.phase = 'end';
+   343→    this.menuTimer = 1.6;
+   344→  }
+   345→
+   346→  lose() {
+   347→    this.pushMsg('O grupo foi derrotado...', 1.4);
+   348→    this.result = { win: false, fled: false, exp: 0, zeni: 0, drops: [] };
+   349→    this.phase = 'gameover';
+   350→    this.menuTimer = 1.8;
+   351→  }
+   352→
+   353→  // ---------- Update & Render ----------
+   354→  update(dt: number) {
+   355→    this.t += dt;
+   356→    if (this.shake > 0) this.shake -= dt;
+   357→    if (this.flash > 0) this.flash -= dt;
+   358→    if (this.goldFlash > 0) this.goldFlash -= dt;
+   359→
+   360→    if (this.phase === 'intro') {
+   361→      this.menuTimer += dt;
+   362→      if (this.menuTimer > 1.2) this.beginTurn();
+   363→    } else if (this.phase === 'menu') {
+   364→      // safety: victory/defeat can also happen while waiting for input
+   365→      if (this.enemies.every((e) => !e.alive)) this.win();
+   366→      else if (this.party.every((p) => !p.alive)) this.lose();
+   367→    } else if (this.phase === 'anim') {
+   368→      if (this.anim) {
+   369→        this.anim.t += dt;
+   370→        if (this.anim.kind === 'dash' || this.anim.kind === 'blast' || this.anim.kind === 'beam' || this.anim.kind === 'heal' || this.anim.kind === 'enemyblast' || this.anim.kind === 'wind' || this.anim.kind === 'transform') {
+   371→          const hitAt = this.anim.kind === 'dash' ? 0.55 * this.anim.dur : 0.6 * this.anim.dur;
+   372→          if (!this.anim.done && this.anim.t >= hitAt && this.anim.onHit) {
+   373→            this.anim.done = true;
+   374→            this.anim.onHit();
+   375→            this.anim = null;
+   376→            this.finishDelay = Math.max(this.finishDelay, 0.4);
+   377→            return;
+   378→          }
+   379→        }
+   380→        if (this.anim && this.anim.t >= this.anim.dur) this.anim = null;
+   381→      } else {
+   382→        this.finishDelay -= dt;
+   383→        if (this.finishDelay <= 0) {
+   384→          if (this.enemies.every((e) => !e.alive)) { this.win(); return; }
+   385→          if (this.party.every((p) => !p.alive)) { this.lose(); return; }
+   386→          this.resolveNext();
+   387→        }
+   388→      }
+   389→    } else if (this.phase === 'end' || this.phase === 'gameover') {
+   390→      this.menuTimer -= dt;
+   391→      if (this.menuTimer <= 0 && this.onEnd) {
+   392→        const cb = this.onEnd;
+   393→        this.onEnd = null;
+   394→        cb(this.result);
+   395→      }
+   396→    }
+   397→    // msgs decay
+   398→    this.msgs.forEach((m) => (m.t -= dt));
+   399→    this.msgs = this.msgs.filter((m) => m.t > 0);
+   400→    // popups decay
+   401→    this.popups.forEach((p) => (p.t -= dt));
+   402→    this.popups = this.popups.filter((p) => p.t > 0);
+   403→  }
+   404→
+   405→  render(g: CanvasRenderingContext2D, W: number, H: number) {
+   406→    const sx = this.shake > 0 ? (Math.random() - 0.5) * 8 * this.shake : 0;
+   407→    const sy = this.shake > 0 ? (Math.random() - 0.5) * 8 * this.shake : 0;
+   408→    g.save();
+   409→    g.translate(sx, sy);
+   410→
+   411→    // Battle background
+   412→    const grad = g.createLinearGradient(0, 0, 0, H);
+   413→    grad.addColorStop(0, this.isBoss ? '#481828' : '#284878');
+   414→    grad.addColorStop(0.6, this.isBoss ? '#782838' : '#4878a8');
+   415→    grad.addColorStop(1, this.isBoss ? '#a84838' : '#78a8c8');
+   416→    g.fillStyle = grad;
+   417→    g.fillRect(0, 0, W, H);
+   418→    // ground
+   419→    g.fillStyle = this.isBoss ? '#582820' : '#3d7848';
+   420→    g.fillRect(0, H * 0.62, W, H * 0.38);
+   421→    g.fillStyle = this.isBoss ? '#482018' : '#33683c';
+   422→    for (let i = 0; i < 12; i++) g.fillRect(((i * 97) % W), H * 0.62 + ((i * 53) % (H * 0.35)), 20, 3);
+   423→    // clouds
+   424→    g.fillStyle = 'rgba(255,255,255,0.5)';
+   425→    for (let i = 0; i < 4; i++) {
+   426→      const cx = (i * 210 + this.t * 12) % (W + 120) - 60;
+   427→      g.fillRect(cx, 40 + i * 22, 60, 10);
+   428→      g.fillRect(cx + 12, 32 + i * 22, 36, 10);
+   429→    }
+   430→
+   431→    const fx = getEffectSprites();
+   432→
+   433→    // Enemies (right side, feet on ground)
+   434→    const aliveEnemies = this.enemies.filter((e) => e.alive);
+   435→    this.enemies.forEach((e, i) => {
+   436→      const art = getEnemyArt(e.enemyId || 'saiba');
+   437→      const pos = this.enemyPos(i, W, H);
+   438→      const bob = Math.sin(this.t * 3 + i * 1.5) * 4;
+   439→      const ex = pos.x;
+   440→      const ey = pos.y + bob;
+   441→      if (e.alive) {
+   442→        // shadow
+   443→        g.fillStyle = 'rgba(0,0,0,0.3)';
+   444→        g.beginPath();
+   445→        g.ellipse(pos.x + art.w / 2, H * 0.62 + 14 + Math.floor(i / 3) * 0, art.w * 0.4, 8, 0, 0, Math.PI * 2);
+   446→        g.fill();
+   447→        g.drawImage(art.body, ex, ey);
+   448→        // mini HP bar
+   449→        g.fillStyle = '#101828';
+   450→        g.fillRect(ex + art.w / 2 - 30, ey - 10, 60, 6);
+   451→        g.fillStyle = '#f04040';
+   452→        g.fillRect(ex + art.w / 2 - 29, ey - 9, 58 * Math.max(0, e.hp / e.maxHp), 4);
+   453→        if (e.pl && this.t < 6) {
+   454→          pTextC(g, `PL ${e.pl.toLocaleString('pt-BR')}`, ex + art.w / 2, ey + art.h + 4, 7, '#f0a838');
+   455→        }
+   456→      } else {
+   457→        g.globalAlpha = 0.2;
+   458→        g.drawImage(art.body, ex, ey + 26);
+   459→        g.globalAlpha = 1;
+   460→      }
+   461→    });
+   462→
+   463→    // Party attack anim (dash) — party dashes right, enemy lunges left
+   464→    if (this.anim && (this.anim.kind === 'dash')) {
+   465→      const a = this.anim;
+   466→      const p = Math.min(1, a.t / (0.55 * a.dur));
+   467→      const f = a.from!;
+   468→      if (f.side === 'enemy') {
+   469→        const ti = this.enemies.indexOf(f);
+   470→        const pos = this.enemyPos(ti, W, H);
+   471→        const art = getEnemyArt(f.enemyId || 'saiba');
+   472→        const tx = 170;
+   473→        const ty = H * 0.62 - art.h;
+   474→        const x = pos.x - (pos.x - tx) * p;
+   475→        const y = pos.y - (pos.y - ty) * p * 0.5;
+   476→        g.drawImage(art.body, x, y);
+   477→      } else {
+   478→        const frames = getCharFrames(f.styleKey || 'saiya');
+   479→        const target = a.to && a.to.alive ? a.to : (aliveEnemies[0] || this.enemies[0]);
+   480→        const ti = this.enemies.indexOf(target);
+   481→        const pos = this.enemyPos(ti, W, H);
+   482→        const tx = pos.x + 30;
+   483→        const ty = pos.y + 30;
+   484→        const x = 60 + (tx - 60) * p;
+   485→        const y = ty - 30 + Math.sin(p * Math.PI) * -40;
+   486→        g.drawImage(frames.right[Math.floor(p * 2) % 2], x, y);
+   487→      }
+   488→    }
+   489→    if (this.anim && (this.anim.kind === 'blast' || this.anim.kind === 'enemyblast' || this.anim.kind === 'beam' || this.anim.kind === 'wind')) {
+   490→      const a = this.anim;
+   491→      const p = Math.min(1, a.t / a.dur);
+   492→      const target = a.to && a.to.alive ? a.to : (aliveEnemies[0] || this.enemies[0]);
+   493→      const ti = this.enemies.indexOf(target);
+   494→      const pos = this.enemyPos(ti, W, H);
+   495→      const tx = pos.x + 30;
+   496→      const ty = pos.y + 30;
+   497→      if (a.kind === 'blast' || a.kind === 'enemyblast') {
+   498→        const fromX = a.kind === 'blast' ? 80 : tx + 120;
+   499→        const x = fromX + (tx - fromX) * p;
+   500→        const r = 10 + Math.sin(p * Math.PI) * 8;
+   501→        g.fillStyle = '#88d8f8';
+   502→        g.beginPath(); g.arc(x, ty, r, 0, Math.PI * 2); g.fill();
+   503→        g.fillStyle = '#ffffff';
+   504→        g.beginPath(); g.arc(x, ty, r * 0.55, 0, Math.PI * 2); g.fill();
+   505→      } else if (a.kind === 'beam') {
+   506→        const w = Math.max(0, (tx - 70) * Math.min(1, p * 2));
+   507→        g.fillStyle = '#48c8f8';
+   508→        g.fillRect(70, ty - 12, w, 24);
+   509→        g.fillStyle = '#ffffff';
+   510→        g.fillRect(70, ty - 6, w, 12);
+   511→      } else if (a.kind === 'wind') {
+   512→        g.strokeStyle = 'rgba(136,216,248,0.8)';
+   513→        g.lineWidth = 3;
+   514→        for (let i = 0; i < 3; i++) {
+   515→          g.beginPath();
+   516→          g.arc(tx, ty, 30 + i * 18 + p * 60, 0, Math.PI * 2);
+   517→          g.stroke();
+   518→        }
+   519→      }
+   520→    }
+   521→    if (this.anim && this.anim.kind === 'heal') {
+   522→      const a = this.anim;
+   523→      const p = Math.min(1, a.t / a.dur);
+   524→      const t = a.to || a.from!;
+   525→      g.fillStyle = `rgba(88,248,136,${0.7 * (1 - p)})`;
+   526→      g.beginPath();
+   527→      g.arc(W * 0.28, H * 0.4, 30 + p * 30, 0, Math.PI * 2);
+   528→      g.fill();
+   529→      g.drawImage(fx.star, W * 0.28 - 12, H * 0.4 - 40 - p * 20);
+   530→    }
+   531→    if (this.anim && this.anim.kind === 'transform') {
+   532→      const a = this.anim;
+   533→      const p = Math.min(1, a.t / a.dur);
+   534→      g.fillStyle = `rgba(248,208,48,${0.5 * (1 - p)})`;
+   535→      g.fillRect(0, 0, W, H);
+   536→      for (let i = 0; i < 8; i++) {
+   537→        const yy = H - p * H * 1.1 + i * 40;
+   538→        g.drawImage(fx.aura, 40 + i * 24, yy, 36, 60);
+   539→      }
+   540→    }
+   541→
+   542→    // Impact stars when just hit
+   543→    if (!this.anim && this.shake > 0.1) {
+   544→      const target = aliveEnemies[0] || this.enemies[0];
+   545→      if (target) {
+   546→        const ti = this.enemies.indexOf(target);
+   547→        const pos = this.enemyPos(ti, W, H);
+   548→        g.drawImage(fx.star, pos.x + 20, pos.y + 20);
+   549→        g.drawImage(fx.star, pos.x + 60, pos.y + 50);
+   550→      }
+   551→    }
+   552→
+   553→    // Damage popups
+   554→    this.popups.forEach((p) => {
+   555→      const yy = p.y - (1.1 - p.t) * 40;
+   556→      g.globalAlpha = Math.min(1, p.t * 2);
+   557→      pTextC(g, p.text, p.x, yy, 12, p.color);
+   558→      g.globalAlpha = 1;
+   559→    });
+   560→
+   561→    // Party panel (left)
+   562→    panel(g, 10, 60, 240, 30 + this.party.length * 66);
+   563→    this.party.forEach((f, i) => {
+   564→      const y = 74 + i * 66;
+   565→      const port = getPortrait(f.styleKey || 'saiya');
+   566→      g.globalAlpha = f.alive ? 1 : 0.3;
+   567→      g.drawImage(port, 20, y);
+   568→      g.globalAlpha = 1;
+   569→      pText(g, f.name, 62, y, 8, f.alive ? '#fff' : '#8890a0');
+   570→      pText(g, `HP ${Math.max(0, f.hp)}/${f.maxHp}`, 62, y + 13, 7, '#a8f0a8');
+   571→      pText(g, `KI ${f.ki}/${f.maxKi}`, 62, y + 24, 7, '#88c8f8');
+   572→      if (f.transformed) pText(g, 'SUPER!', 170, y, 7, '#f8d030');
+   573→      if (f.buffed) pText(g, 'UP!', 170, y + 13, 7, '#f08838');
+   574→    });
+   575→
+   576→    // Message log (top)
+   577→    panel(g, W / 2 - 180, 8, 360, 20 + this.msgs.length * 14);
+   578→    this.msgs.forEach((m, i) => {
+   579→      pText(g, m.text, W / 2 - 168, 16 + i * 14, 8, '#fff');
+   580→    });
+   581→
+   582→    // Command menu (bottom)
+   583→    if (this.phase === 'menu') {
+   584→      const actor = this.turnOrder[this.currentIdx];
+   585→      const cmds = ['Atacar', 'Artes Ki', 'Item', 'Defender', 'Fugir'];
+   586→      if (actor?.transformed === false && this.canTransform(actor)) cmds.splice(4, 0, 'Transformar');
+   587→      panel(g, W / 2 - 200, H - 78, 400, 70);
+   588→      cmds.forEach((c, i) => {
+   589→        const col = i % 3, row = Math.floor(i / 3);
+   590→        const x = W / 2 - 180 + col * 130;
+   591→        const y = H - 64 + row * 24;
+   592→        if (i === this.menuIdx) { g.fillStyle = '#f0c030'; g.fillRect(x - 8, y - 3, 118, 20); }
+   593→        pText(g, c, x, y, 8, i === this.menuIdx ? '#101828' : '#fff');
+   594→      });
+   595→      pText(g, `${actor?.name || ''} - escolha (setas + Z)`, W / 2 - 180, H - 14, 7, '#a8b0c0');
+   596→    }
+   597→    if (this.phase === 'skillmenu') {
+   598→      const actor = this.turnOrder[this.currentIdx];
+   599→      const skills = actor ? actor.skills.map((s) => SKILLS[s]).filter(Boolean) : [];
+   600→      panel(g, W / 2 - 220, H - 108, 440, 100);
+   601→      skills.forEach((sk, i) => {
+   602→        const y = H - 94 + i * 22;
+   603→        if (i === this.subIdx) { g.fillStyle = '#f0c030'; g.fillRect(W / 2 - 206, y - 3, 400, 20); }
+   604→        pText(g, `${sk.name} (KI ${sk.cost})`, W / 2 - 198, y, 8, actor && actor.ki >= sk.cost ? (i === this.subIdx ? '#101828' : '#fff') : '#8890a0');
+   605→      });
+   606→    }
+   607→    if (this.phase === 'itemmenu') {
+   608→      const items = [...(this.inventory || new Map()).entries()].filter(([id, n]) => n > 0 && ITEMS[id]);
+   609→      panel(g, W / 2 - 220, H - 108, 440, 100);
+   610→      items.slice(0, 4).forEach(([id, n], i) => {
+   611→        const y = H - 94 + i * 22;
+   612→        if (i === this.subIdx) { g.fillStyle = '#f0c030'; g.fillRect(W / 2 - 206, y - 3, 400, 20); }
+   613→        pText(g, `${ITEMS[id].name} x${n}`, W / 2 - 198, y, 8, i === this.subIdx ? '#101828' : '#fff');
+   614→      });
+   615→      if (items.length === 0) pText(g, 'Sem itens!', W / 2 - 100, H - 90, 8, '#f08888');
+   616→    }
+   617→    if (this.phase === 'target') {
+   618→      const target = this.pendingTarget;
+   619→      if (target) {
+   620→        const idx = this.enemies.indexOf(target);
+   621→        const art = getEnemyArt(target.enemyId || 'saiba');
+   622→        const pos = this.enemyPos(idx, W, H);
+   623→        const ex = pos.x, ey = pos.y;
+   624→        g.strokeStyle = '#f04040';
+   625→        g.lineWidth = 3;
+   626→        const pulse = 4 + Math.sin(this.t * 8) * 3;
+   627→        g.strokeRect(ex - pulse, ey - pulse, art.body.width + pulse * 2, art.body.height + pulse * 2);
+   628→        pTextC(g, 'Z: confirmar  X: voltar', W / 2, H - 30, 8, '#f8d030');
+   629→      }
+   630→    }
+   631→
+   632→    // End overlay
+   633→    if (this.phase === 'end' && this.result) {
+   634→      panel(g, W / 2 - 140, H / 2 - 60, 280, 120);
+   635→      pTextC(g, this.result.win ? 'VITÓRIA!' : 'FUGIU!', W / 2, H / 2 - 44, 12, '#f8d030');
+   636→      pTextC(g, `EXP +${this.result.exp}`, W / 2, H / 2 - 14, 9, '#a8f0a8');
+   637→      pTextC(g, `Zeni +${this.result.zeni}`, W / 2, H / 2 + 4, 9, '#f8d030');
+   638→      if (this.result.drops.length) pTextC(g, `Item: ${this.result.drops.map((d) => ITEMS[d]?.name).join(', ')}`, W / 2, H / 2 + 22, 8, '#88c8f8');
+   639→      pTextC(g, '...', W / 2, H / 2 + 44, 8, '#a8b0c0');
+   640→    }
+   641→    if (this.phase === 'gameover') {
+   642→      g.fillStyle = 'rgba(0,0,0,0.7)';
+   643→      g.fillRect(0, 0, W, H);
+   644→      pTextC(g, 'DERROTA...', W / 2, H / 2 - 30, 14, '#f04040');
+   645→      pTextC(g, 'Você acordará na cidade.', W / 2, H / 2 + 6, 9, '#fff');
+   646→    }
+   647→
+   648→    g.restore();
+   649→  }
+   650→
+   651→  pendingTarget: Fighter | null = null;
+   652→
+   653→  canTransform(f: Fighter): boolean {
+   654→    // super form unlocked flag handled by game; party fighters carry it
+   655→    return (f as Fighter & { canSuper?: boolean }).canSuper === true && !f.transformed && f.ki >= 20;
+   656→  }
+   657→
+   658→  // keyboard handling
+   659→  key(k: string): boolean {
+   660→    if (this.phase === 'menu') {
+   661→      const actor = this.turnOrder[this.currentIdx];
+   662→      const cmds = ['attack', 'skill', 'item', 'defend', 'flee'];
+   663→      if (actor && this.canTransform(actor)) cmds.splice(4, 0, 'transform');
+   664→      const n = cmds.length;
+   665→      if (k === 'ArrowUp' || k === 'ArrowLeft') { this.menuIdx = (this.menuIdx - 1 + n) % n; chip.sfx('menu'); return true; }
+   666→      if (k === 'ArrowDown' || k === 'ArrowRight') { this.menuIdx = (this.menuIdx + 1) % n; chip.sfx('menu'); return true; }
+   667→      if (k === 'z' || k === 'Enter' || k === 'Z') {
+   668→        chip.sfx('confirm');
+   669→        const c = cmds[this.menuIdx];
+   670→        if (c === 'attack') { this.pendingAction = 'attack'; this.pendingTarget = this.pickEnemyTarget(this.turnOrder[this.currentIdx]); this.phase = 'target'; }
+   671→        else if (c === 'skill') { this.phase = 'skillmenu'; this.subIdx = 0; }
+   672→        else if (c === 'item') { this.phase = 'itemmenu'; this.subIdx = 0; }
+   673→        else if (c === 'defend') this.playerCommand('defend');
+   674→        else if (c === 'flee') this.playerCommand('flee');
+   675→        else if (c === 'transform') this.playerCommand('transform');
+   676→        return true;
+   677→      }
+   678→    } else if (this.phase === 'target') {
+   679→      const alive = this.enemies.filter((e) => e.alive);
+   680→      const idx = alive.indexOf(this.pendingTarget!);
+   681→      if (k === 'ArrowLeft' || k === 'ArrowUp') {
+   682→        this.pendingTarget = alive[(idx - 1 + alive.length) % alive.length];
+   683→        chip.sfx('menu'); return true;
+   684→      }
+   685→      if (k === 'ArrowRight' || k === 'ArrowDown') {
+   686→        this.pendingTarget = alive[(idx + 1) % alive.length];
+   687→        chip.sfx('menu'); return true;
+   688→      }
+   689→      if (k === 'z' || k === 'Enter' || k === 'Z') {
+   690→        chip.sfx('confirm');
+   691→        if (this.pendingAction === 'skill') this.playerCommand('skill', this.pendingSkillId || undefined, undefined, this.pendingTarget!);
+   692→        else this.playerCommand('attack', undefined, undefined, this.pendingTarget!);
+   693→        this.pendingAction = null;
+   694→        return true;
+   695→      }
+   696→      if (k === 'x' || k === 'Escape') { this.phase = 'menu'; chip.sfx('cancel'); return true; }
+   697→    } else if (this.phase === 'skillmenu') {
+   698→      const actor = this.turnOrder[this.currentIdx];
+   699→      const skills = actor ? actor.skills.map((s) => SKILLS[s]).filter(Boolean) : [];
+   700→      if (k === 'ArrowUp') { this.subIdx = (this.subIdx - 1 + skills.length) % skills.length; chip.sfx('menu'); return true; }
+   701→      if (k === 'ArrowDown') { this.subIdx = (this.subIdx + 1) % skills.length; chip.sfx('menu'); return true; }
+   702→      if (k === 'z' || k === 'Enter' || k === 'Z') {
+   703→        const sk = skills[this.subIdx];
+   704→        if (!sk) return true;
+   705→        if (actor && actor.ki < sk.cost) { chip.sfx('cancel'); return true; }
+   706→        chip.sfx('confirm');
+   707→        this.pendingAction = 'skill';
+   708→        this.pendingSkillId = sk.id;
+   709→        if (sk.kind === 'heal') {
+   710→          // target party member: just cast on self/lowest? cast on actor for simplicity, or target selection of party
+   711→          this.playerCommand('skill', sk.id, undefined, this.lowestHpAlly());
+   712→        } else if (sk.kind === 'dmgall' || sk.kind === 'buff') {
+   713→          this.playerCommand('skill', sk.id);
+   714→        } else {
+   715→          this.pendingTarget = this.pickEnemyTarget(actor);
+   716→          this.phase = 'target';
+   717→        }
+   718→        return true;
+   719→      }
+   720→      if (k === 'x' || k === 'Escape') { this.phase = 'menu'; chip.sfx('cancel'); return true; }
+   721→    } else if (this.phase === 'itemmenu') {
+   722→      const items = [...(this.inventory || new Map()).entries()].filter(([id, n]) => n > 0 && ITEMS[id] && ITEMS[id].kind !== 'gear');
+   723→      if (items.length === 0) { if (k === 'x' || k === 'Escape') { this.phase = 'menu'; chip.sfx('cancel'); } return true; }
+   724→      if (k === 'ArrowUp') { this.subIdx = (this.subIdx - 1 + items.length) % items.length; chip.sfx('menu'); return true; }
+   725→      if (k === 'ArrowDown') { this.subIdx = (this.subIdx + 1) % items.length; chip.sfx('menu'); return true; }
+   726→      if (k === 'z' || k === 'Enter' || k === 'Z') {
+   727→        chip.sfx('confirm');
+   728→        const [id] = items[this.subIdx];
+   729→        this.playerCommand('item', undefined, id);
+   730→        return true;
+   731→      }
+   732→      if (k === 'x' || k === 'Escape') { this.phase = 'menu'; chip.sfx('cancel'); return true; }
+   733→    } else if (this.phase === 'intro' || this.phase === 'anim' || this.phase === 'end') {
+   734→      // skip waiting
+   735→      if (k === 'z' || k === 'Enter') {
+   736→        if (this.phase === 'anim' && this.msgs.length) { this.msgs.forEach((m) => (m.t = Math.min(m.t, 0.1))); return true; }
+   737→      }
+   738→    }
+   739→    return false;
+   740→  }
+   741→
+   742→  lowestHpAlly(): Fighter {
+   743→    const alive = this.party.filter((p) => p.alive);
+   744→    return alive.reduce((a, b) => (a.hp / a.maxHp <= b.hp / b.maxHp ? a : b), alive[0]);
+   745→  }
+   746→}
+   747→
