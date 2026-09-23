@@ -1,0 +1,214 @@
+export interface MultiplayerPlayer {
+  sessionId: string;
+  name: string;
+  classId: string;
+  x: number;
+  y: number;
+  dir: 'down' | 'up' | 'left' | 'right';
+}
+
+export interface MultiplayerChat {
+  sessionId: string;
+  name: string;
+  text: string;
+}
+
+export type MultiplayerStatus =
+  | 'disabled'
+  | 'connecting'
+  | 'online'
+  | 'offline'
+  | 'error';
+
+interface ColyseusRoom {
+  sessionId: string;
+  send(type: string, payload?: unknown): void;
+  leave(consented?: boolean): Promise<number> | number | void;
+  onMessage(type: string, callback: (message: any) => void): void;
+  onLeave(callback: (code?: number) => void): void;
+  onError(callback: (code: number, message?: string) => void): void;
+}
+
+interface ColyseusClient {
+  auth: { token?: string };
+  joinOrCreate(name: string, options?: Record<string, unknown>): Promise<ColyseusRoom>;
+}
+
+interface ColyseusGlobal {
+  Client: new (endpoint: string) => ColyseusClient;
+}
+
+declare global {
+  interface Window {
+    Colyseus?: ColyseusGlobal;
+  }
+}
+
+const SDK_URL =
+  'https://unpkg.com/@colyseus/sdk@0.18.2/dist/colyseus.js';
+
+let sdkPromise: Promise<ColyseusGlobal> | null = null;
+
+function loadSdk(): Promise<ColyseusGlobal> {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('Colyseus só pode ser carregado no navegador.'));
+  }
+
+  if (window.Colyseus) return Promise.resolve(window.Colyseus);
+  if (sdkPromise) return sdkPromise;
+
+  sdkPromise = new Promise<ColyseusGlobal>((resolve, reject) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[data-dso-colyseus-sdk]',
+    );
+
+    const finish = () => {
+      if (window.Colyseus) {
+        resolve(window.Colyseus);
+      } else {
+        reject(new Error('O SDK do Colyseus foi carregado sem expor window.Colyseus.'));
+      }
+    };
+
+    if (existing) {
+      existing.addEventListener('load', finish, { once: true });
+      existing.addEventListener(
+        'error',
+        () => reject(new Error('Não foi possível carregar o SDK do Colyseus.')),
+        { once: true },
+      );
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = SDK_URL;
+    script.async = true;
+    script.dataset.dsoColyseusSdk = 'true';
+    script.onload = finish;
+    script.onerror = () =>
+      reject(new Error('Não foi possível carregar o SDK do Colyseus.'));
+    document.head.appendChild(script);
+  });
+
+  return sdkPromise;
+}
+
+export interface MultiplayerCallbacks {
+  onStatus?: (status: MultiplayerStatus, message?: string) => void;
+  onSnapshot?: (players: MultiplayerPlayer[]) => void;
+  onPlayerJoined?: (player: MultiplayerPlayer) => void;
+  onPlayerMoved?: (player: MultiplayerPlayer) => void;
+  onPlayerLeft?: (sessionId: string) => void;
+  onChat?: (message: MultiplayerChat) => void;
+  onPresence?: (count: number) => void;
+}
+
+export interface MultiplayerConnection {
+  readonly sessionId: string;
+  sendMove(
+    x: number,
+    y: number,
+    dir: 'down' | 'up' | 'left' | 'right',
+  ): void;
+  sendChat(text: string): void;
+  leave(): Promise<void>;
+}
+
+export async function connectMultiplayer(options: {
+  endpoint: string;
+  accessToken: string;
+  characterId: string;
+  callbacks?: MultiplayerCallbacks;
+}): Promise<MultiplayerConnection> {
+  const endpoint = options.endpoint.trim();
+  if (!endpoint) {
+    throw new Error('NEXT_PUBLIC_COLYSEUS_URL não foi configurada.');
+  }
+
+  options.callbacks?.onStatus?.('connecting');
+
+  const Colyseus = await loadSdk();
+  const client = new Colyseus.Client(endpoint);
+  client.auth.token = options.accessToken;
+
+  let room: ColyseusRoom;
+
+  try {
+    room = await client.joinOrCreate('world', {
+      characterId: options.characterId,
+    });
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : 'Falha ao entrar no mundo online.';
+    options.callbacks?.onStatus?.('error', message);
+    throw error;
+  }
+
+  const ownSessionId = room.sessionId;
+
+  room.onMessage('snapshot', (players: MultiplayerPlayer[]) => {
+    const remote = Array.isArray(players)
+      ? players.filter((player) => player.sessionId !== ownSessionId)
+      : [];
+    options.callbacks?.onSnapshot?.(remote);
+  });
+
+  room.onMessage('player_joined', (player: MultiplayerPlayer) => {
+    if (player?.sessionId === ownSessionId) return;
+    options.callbacks?.onPlayerJoined?.(player);
+  });
+
+  room.onMessage('player_move', (player: MultiplayerPlayer) => {
+    if (player?.sessionId === ownSessionId) return;
+    options.callbacks?.onPlayerMoved?.(player);
+  });
+
+  room.onMessage('player_left', (payload: { sessionId?: string }) => {
+    if (!payload?.sessionId || payload.sessionId === ownSessionId) return;
+    options.callbacks?.onPlayerLeft?.(payload.sessionId);
+  });
+
+  room.onMessage('chat', (message: MultiplayerChat) => {
+    if (!message || message.sessionId === ownSessionId) return;
+    options.callbacks?.onChat?.(message);
+  });
+
+  room.onMessage('presence', (payload: { count?: number }) => {
+    const count = Number(payload?.count);
+    if (Number.isFinite(count)) {
+      options.callbacks?.onPresence?.(Math.max(1, Math.floor(count)));
+    }
+  });
+
+  room.onLeave(() => {
+    options.callbacks?.onStatus?.('offline');
+  });
+
+  room.onError((_code, message) => {
+    options.callbacks?.onStatus?.(
+      'error',
+      message || 'Erro na conexão multiplayer.',
+    );
+  });
+
+  options.callbacks?.onStatus?.('online');
+
+  return {
+    sessionId: ownSessionId,
+
+    sendMove(x, y, dir) {
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+      room.send('move', { x, y, dir });
+    },
+
+    sendChat(text) {
+      const clean = text.replace(/\s+/g, ' ').trim().slice(0, 80);
+      if (!clean) return;
+      room.send('chat', { text: clean });
+    },
+
+    async leave() {
+      await Promise.resolve(room.leave(true));
+    },
+  };
+}
