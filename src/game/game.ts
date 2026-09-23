@@ -14,6 +14,15 @@ const T16 = 16;
 
 export interface ChatLine { name: string; text: string; color: string; sys?: boolean }
 
+export interface RemotePlayerNetworkState {
+  sessionId: string;
+  name: string;
+  classId: string;
+  x: number;
+  y: number;
+  dir: 'down' | 'up' | 'left' | 'right';
+}
+
 export interface PlayerState {
   name: string;
   classId: string;
@@ -56,6 +65,15 @@ interface FakePlayer {
   moving: boolean;
 }
 
+interface RemotePlayerView extends RemotePlayerNetworkState {
+  tx: number;
+  ty: number;
+  animT: number;
+  moving: boolean;
+  bubble: string | null;
+  bubbleT: number;
+}
+
 interface Spawn {
   enemyId: string;
   x: number; y: number;
@@ -82,6 +100,8 @@ export class Game {
   chat: ChatLine[] = [];
   npcs: Npc[] = [];
   fakes: FakePlayer[] = [];
+  remotePlayers = new Map<string, RemotePlayerView>();
+  multiplayerActive = false;
   spawns: Spawn[] = [];
   ballEnts: { key: string; x: number; y: number }[] = [];
   battle: Battle | null = null;
@@ -211,6 +231,63 @@ export class Game {
   addChat(l: ChatLine) {
     this.chat.push(l);
     if (this.chat.length > 60) this.chat.shift();
+  }
+
+  setMultiplayerActive(active: boolean) {
+    this.multiplayerActive = active;
+    if (!active) this.remotePlayers.clear();
+  }
+
+  setRemoteSnapshot(players: RemotePlayerNetworkState[]) {
+    this.remotePlayers.clear();
+    for (const player of players) this.upsertRemotePlayer(player);
+  }
+
+  upsertRemotePlayer(player: RemotePlayerNetworkState) {
+    if (!player?.sessionId) return;
+
+    const existing = this.remotePlayers.get(player.sessionId);
+    if (existing) {
+      const distance = Math.hypot(player.x - existing.tx, player.y - existing.ty);
+      existing.tx = player.x;
+      existing.ty = player.y;
+      existing.name = player.name;
+      existing.classId = player.classId;
+      existing.dir = player.dir;
+      existing.moving = distance > 0.5;
+      return;
+    }
+
+    this.remotePlayers.set(player.sessionId, {
+      ...player,
+      tx: player.x,
+      ty: player.y,
+      animT: 0,
+      moving: false,
+      bubble: null,
+      bubbleT: 0,
+    });
+  }
+
+  removeRemotePlayer(sessionId: string) {
+    this.remotePlayers.delete(sessionId);
+  }
+
+  receiveRemoteChat(message: { sessionId: string; name: string; text: string }) {
+    const text = message.text.trim();
+    if (!text) return;
+
+    this.addChat({ name: message.name, text, color: '#d8d8f0' });
+
+    const remote = this.remotePlayers.get(message.sessionId);
+    if (remote) {
+      remote.bubble = text;
+      remote.bubbleT = 4;
+    }
+  }
+
+  setOnlineCount(count: number) {
+    this.onlineCount = Math.max(1, Math.floor(count));
   }
 
   sendChat(text: string) {
@@ -460,7 +537,7 @@ export class Game {
     if (this.bubbleT > 0) this.bubbleT -= dt;
 
     // fake players wander
-    for (const f of this.fakes) {
+    for (const f of (this.multiplayerActive ? [] : this.fakes)) {
       f.animT += dt;
       if (f.bubbleT > 0) f.bubbleT -= dt; else f.bubble = null;
       if (f.moving) {
@@ -487,7 +564,7 @@ export class Game {
 
     // fake chat
     this.chatTimer -= dt;
-    if (this.chatTimer <= 0) {
+    if (!this.multiplayerActive && this.chatTimer <= 0) {
       this.chatTimer = 7 + Math.random() * 9;
       if (Math.random() < 0.8) {
         const fp = FAKE_PLAYERS[Math.floor(Math.random() * FAKE_PLAYERS.length)];
@@ -501,9 +578,34 @@ export class Game {
       }
     }
     this.onlineTimer -= dt;
-    if (this.onlineTimer <= 0) {
+    if (!this.multiplayerActive && this.onlineTimer <= 0) {
       this.onlineTimer = 8 + Math.random() * 6;
       this.onlineCount = Math.max(38, Math.min(64, this.onlineCount + Math.floor(Math.random() * 5) - 2));
+    }
+
+    // interpolate real multiplayer players between network updates
+    for (const remote of this.remotePlayers.values()) {
+      remote.animT += dt;
+      if (remote.bubbleT > 0) {
+        remote.bubbleT -= dt;
+      } else {
+        remote.bubble = null;
+      }
+
+      const dx = remote.tx - remote.x;
+      const dy = remote.ty - remote.y;
+      const distance = Math.hypot(dx, dy);
+
+      if (distance > 0.25) {
+        const factor = Math.min(1, dt * 12);
+        remote.x += dx * factor;
+        remote.y += dy * factor;
+        remote.moving = true;
+      } else {
+        remote.x = remote.tx;
+        remote.y = remote.ty;
+        remote.moving = false;
+      }
     }
 
     // spawns wander & collision
@@ -861,7 +963,7 @@ export class Game {
     }
 
     // fake players
-    for (const fp of this.fakes) {
+    for (const fp of (this.multiplayerActive ? [] : this.fakes)) {
       const x = fp.x * sc - this.camX;
       const y = fp.y * sc - this.camY;
       if (x < -60 || x > VW + 60 || y < -80 || y > VH + 60) continue;
@@ -880,6 +982,44 @@ export class Game {
             const bw = 150, bh = lines.length * 11 + 8;
             panel(g, x + 18 - bw / 2, y - 20 - bh, bw, bh, '#88f0a0', 'rgba(16,24,48,0.92)');
             lines.forEach((l, li) => pText(g, l, x + 18 - bw / 2 + 6, y - 20 - bh + 6 + li * 11, 7, '#fff'));
+          }
+        },
+      });
+    }
+
+    // real multiplayer players
+    for (const remote of this.remotePlayers.values()) {
+      const x = remote.x * sc - this.camX;
+      const y = remote.y * sc - this.camY;
+      if (x < -60 || x > VW + 60 || y < -80 || y > VH + 60) continue;
+
+      draws.push({
+        y: remote.y,
+        draw: () => {
+          const frames = getCharFrames(remote.classId, undefined, 3);
+          const dirFrames =
+            remote.dir === 'up' ? frames.up :
+            remote.dir === 'left' ? frames.left :
+            remote.dir === 'right' ? frames.right :
+            frames.down;
+          const frame = remote.moving ? Math.floor(remote.animT * 6) % 2 : 0;
+
+          drawShadow(g, x + 18, y + 48, 12);
+          g.drawImage(dirFrames[frame], x, y);
+
+          g.font = '7px "Press Start 2P", monospace';
+          const nw = g.measureText(remote.name).width;
+          g.fillStyle = 'rgba(16,24,48,0.75)';
+          g.fillRect(x + 18 - nw / 2 - 3, y - 12, nw + 6, 11);
+          pTextC(g, remote.name, x + 18, y - 11, 7, '#88f0a0');
+
+          if (remote.bubble) {
+            const lines = wrapText(g, remote.bubble, 140, 7);
+            const bw = 150, bh = lines.length * 11 + 8;
+            panel(g, x + 18 - bw / 2, y - 20 - bh, bw, bh, '#88f0a0', 'rgba(16,24,48,0.92)');
+            lines.forEach((line, index) =>
+              pText(g, line, x + 18 - bw / 2 + 6, y - 20 - bh + 6 + index * 11, 7, '#fff')
+            );
           }
         },
       });
