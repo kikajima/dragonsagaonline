@@ -20,7 +20,9 @@ import {
   type MultiplayerStatus,
 } from '@/lib/multiplayer';
 
-const COLYSEUS_URL = process.env.NEXT_PUBLIC_COLYSEUS_URL?.trim() || '';
+const COLYSEUS_URL =
+  process.env.NEXT_PUBLIC_COLYSEUS_URL?.trim() ||
+  'https://dso-world-production.up.railway.app';
 
 function characterToPlayer(row: CharacterRow): Partial<PlayerState> {
   const state = (row.state || {}) as Partial<PlayerState>;
