@@ -7,7 +7,7 @@ export const server = defineServer({
   },
 
   express: (app) => {
-    app.use((req, res, next) => {
+    app.use((req: any, res: any, next: any) => {
       const origin = process.env.CLIENT_ORIGIN || "*";
       res.header("Access-Control-Allow-Origin", origin);
       res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
@@ -21,7 +21,7 @@ export const server = defineServer({
       next();
     });
 
-    app.get("/health", (_req, res) => {
+    app.get("/health", (_req: any, res: any) => {
       res.json({
         ok: true,
         service: "dragon-saga-online-colyseus",
