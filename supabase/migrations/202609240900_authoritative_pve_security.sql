@@ -241,3 +241,9 @@ revoke all on function public.apply_pve_reward(
 grant execute on function public.apply_pve_reward(
   uuid, uuid, text, integer, integer, text, integer, integer, text
 ) to authenticated;
+
+create index if not exists pve_reward_claims_user_id_idx
+  on private.pve_reward_claims(user_id);
+
+create index if not exists pve_reward_claims_character_id_idx
+  on private.pve_reward_claims(character_id);
