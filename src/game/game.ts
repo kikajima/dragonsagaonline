@@ -41,6 +41,7 @@ export interface PlayerState {
   balls: string[]; // spot keys collected "x,y"
   questIdx: number;
   questProgress: number;
+  sagaCycle: number;
   flags: Record<string, boolean>;
   x: number; y: number;
 }
@@ -120,6 +121,8 @@ export class Game {
     itemId?: string;
   }) => void) | null = null;
   pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
+  worldActionHandler: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest', arg?: string) => void) | null = null;
+  pendingWorldActions = new Set<string>();
   activePveBattleId = '';
   activePveSpawnId = '';
   pendingPveSpawnId = '';
@@ -183,7 +186,7 @@ export class Game {
     return {
       name: 'Guerreiro', classId: 'saiya', lv: 1, exp: 0, hp: 120, ki: 40, zeni: 300,
       baseAtk: 0, baseDef: 0, items: { sensu: 3, capsula: 2 }, gearOwned: [], balls: [],
-      questIdx: 0, questProgress: 0, flags: {}, x: 0, y: 0,
+      questIdx: 0, questProgress: 0, sagaCycle: 0, flags: {}, x: 0, y: 0,
     };
   }
 
@@ -276,6 +279,8 @@ export class Game {
       this.activePveSpawnId = '';
       this.pendingPveSpawnId = '';
       this.pveActionHandler = null;
+      this.worldActionHandler = null;
+      this.pendingWorldActions.clear();
     }
   }
 
@@ -316,6 +321,125 @@ export class Game {
     this.pveBeginHandler = begin;
     this.pveActionHandler = action;
     this.pveCompleteHandler = complete;
+  }
+
+  setWorldActionHandler(
+    cb: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest', arg?: string) => void) | null,
+  ) {
+    this.worldActionHandler = cb;
+  }
+
+  private applyAuthoritativeCharacter(character: {
+    level: number;
+    xp: number;
+    gold: number;
+    hp: number;
+    ki: number;
+    state: Record<string, unknown>;
+  }) {
+    const state = character.state as Partial<PlayerState>;
+    this.player = {
+      ...this.player,
+      ...state,
+      lv: Math.max(1, Math.floor(character.level)),
+      exp: Math.max(0, Number(character.xp)),
+      zeni: Math.max(0, Number(character.gold)),
+      hp: Math.max(1, Math.floor(character.hp)),
+      ki: Math.max(0, Math.floor(character.ki)),
+    };
+    this.refreshBalls();
+  }
+
+  receiveWorldActionResult(event: {
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest';
+    arg: string;
+    character: {
+      level: number;
+      xp: number;
+      gold: number;
+      hp: number;
+      ki: number;
+      state: Record<string, unknown>;
+    };
+  }) {
+    this.pendingWorldActions.delete(`${event.action}:${event.arg || ''}`);
+    const previousCycle = this.player.sagaCycle || 0;
+    this.applyAuthoritativeCharacter(event.character);
+
+    if (event.action === 'shop_buy') {
+      chip.sfx('coin');
+      this.addChat({
+        name: 'Loja',
+        text: `${this.player.name} comprou ${ITEMS[event.arg]?.name || event.arg}!`,
+        color: '#f8d030',
+        sys: true,
+      });
+      if (event.arg === 'scouter') this.toast = { text: 'Scouter ativado! PLs visíveis no mapa.', t: 3 };
+    } else if (event.action === 'world_item') {
+      chip.sfx('heal');
+      this.toast = { text: `${ITEMS[event.arg]?.name || 'Item'} utilizado!`, t: 1.5 };
+    } else if (event.action === 'collect_ball') {
+      chip.sfx('coin');
+      this.addChat({
+        name: 'Sistema',
+        text: `Esfera do Dragão encontrada! (${this.player.balls.length}/7)`,
+        color: '#f8a020',
+        sys: true,
+      });
+      if (this.player.balls.length >= 7) this.startDragon();
+    } else if (event.action === 'master_quest') {
+      chip.sfx('levelup');
+      this.toast = { text: 'MISSÃO COMPLETA!', t: 3 };
+      this.addChat({
+        name: 'Quest completa',
+        text: `O Mestre da Ilha — Saga ${(this.player.sagaCycle || 0) + 1}`,
+        color: '#f8d030',
+        sys: true,
+      });
+    } else if (event.action === 'wish') {
+      const msg =
+        event.arg === 'atk' ? 'ATK permanentemente aumentado!' :
+        event.arg === 'def' ? 'DEF permanentemente aumentada!' :
+        '+5.000 zeni!';
+      this.toast = { text: msg, t: 3.5 };
+      this.addChat({
+        name: 'Shenlong',
+        text: 'Seu desejo foi realizado. As esferas se espalharam pelo mundo novamente...',
+        color: '#88c8f8',
+        sys: true,
+      });
+      this.state = 'world';
+      chip.playSong('field');
+    }
+
+    if ((this.player.sagaCycle || 0) > previousCycle) {
+      this.toast = { text: `SAGA ${this.player.sagaCycle + 1} INICIADA!`, t: 4 };
+    }
+    this.save();
+  }
+
+  receiveWorldActionError(event: { action?: string; message: string }) {
+    if (event.action) {
+      for (const key of [...this.pendingWorldActions]) {
+        if (key.startsWith(`${event.action}:`)) this.pendingWorldActions.delete(key);
+      }
+    } else {
+      this.pendingWorldActions.clear();
+    }
+    this.toast = { text: event.message || 'Ação indisponível.', t: 1.8 };
+    chip.sfx('cancel');
+  }
+
+  private requestWorldAction(
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest',
+    arg = '',
+  ): boolean {
+    if (!this.multiplayerActive || !this.worldActionHandler) return false;
+    const key = `${action}:${arg}`;
+    if (this.pendingWorldActions.has(key)) return true;
+    this.pendingWorldActions.add(key);
+    this.worldActionHandler(action, arg);
+    return true;
   }
 
   setMobSnapshot(mobs: Array<{ spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }>) {
@@ -440,18 +564,7 @@ export class Game {
     this.pendingPveSpawnId = '';
 
     if (event.outcome === 'win' && event.character) {
-      const state = event.character.state as Partial<PlayerState>;
-      const localItems = { ...this.player.items };
-      this.player = {
-        ...this.player,
-        ...state,
-        items: localItems,
-        lv: Math.max(1, Math.floor(event.character.level)),
-        exp: Math.max(0, Number(event.character.xp)),
-        zeni: Math.max(0, Number(event.character.gold)),
-        hp: Math.max(1, Math.floor(event.character.hp)),
-        ki: Math.max(0, Math.floor(event.character.ki)),
-      };
+      this.applyAuthoritativeCharacter(event.character);
 
       this.addChat({
         name: 'Sistema',
@@ -472,7 +585,17 @@ export class Game {
 
       if (this.player.questIdx > previousQuestIdx || event.character.quest_completed) {
         chip.sfx('levelup');
-        this.toast = { text: 'MISSÃO COMPLETA!', t: 3 };
+        if (previousQuestIdx === 5 && this.player.questIdx === 0) {
+          this.toast = { text: `SAGA ${(this.player.sagaCycle || 0) + 1} INICIADA!`, t: 4 };
+          this.addChat({
+            name: 'Saga',
+            text: 'A sequência recomeçou. Volte ao Mestre Kame para iniciar o novo ciclo!',
+            color: '#f8d030',
+            sys: true,
+          });
+        } else {
+          this.toast = { text: 'MISSÃO COMPLETA!', t: 3 };
+        }
       } else {
         const q = QUESTS[this.player.questIdx];
         if (q?.target && q.target === event.enemyId) {
@@ -1081,14 +1204,15 @@ export class Game {
     // dragon ball pickup
     for (const b of [...this.ballEnts]) {
       if (Math.hypot(b.x - this.px, b.y - this.py) < 14) {
+        if (this.requestWorldAction('collect_ball', b.key)) {
+          break;
+        }
         this.player.balls.push(b.key);
         this.ballEnts = this.ballEnts.filter((x) => x !== b);
         chip.sfx('coin');
         this.addChat({ name: 'Sistema', text: `Esfera do Dragão encontrada! (${this.player.balls.length}/7)`, color: '#f8a020', sys: true });
         this.save();
-        if (this.player.balls.length >= 7) {
-          this.startDragon();
-        }
+        if (this.player.balls.length >= 7) this.startDragon();
       }
     }
 
@@ -1192,6 +1316,7 @@ export class Game {
         { who: 'Mestre Kame', text: q.desc },
         { who: 'Mestre Kame', text: 'Leve estes 300 zeni e fale com os aliados na cidade. E cuidado com as criaturas!' },
       ], () => {
+        if (this.requestWorldAction('master_quest')) return;
         this.player.zeni += 300;
         this.player.questProgress = 1;
         this.completeQuest();
@@ -1250,6 +1375,8 @@ export class Game {
   }
 
   applyWish(idx: number) {
+    const wish = idx === 0 ? 'atk' : idx === 1 ? 'def' : 'zeni';
+    if (this.requestWorldAction('wish', wish)) return;
     if (idx === 0) { this.player.baseAtk += 30; this.toast = { text: 'ATK permanentemente aumentado!', t: 3.5 }; }
     else if (idx === 1) { this.player.baseDef += 30; this.toast = { text: 'DEF permanentemente aumentada!', t: 3.5 }; }
     else { this.player.zeni += 5000; this.toast = { text: '+5.000 zeni!', t: 3.5 }; }
@@ -1655,7 +1782,7 @@ export class Game {
     if (q) {
       const lines = wrapText(g, `${q.title}: ${q.desc}`, 210, 6);
       panel(g, mmX - 224, mmY - 4, 220, 14 + lines.length * 10, '#585878');
-      pText(g, 'MISSAO', mmX - 216, mmY + 2, 7, '#f8d030');
+      pText(g, `SAGA ${(this.player.sagaCycle || 0) + 1} · MISSAO`, mmX - 216, mmY + 2, 7, '#f8d030');
       lines.forEach((l, i) => pText(g, l, mmX - 216, mmY + 14 + i * 10, 6, '#e8e8f0'));
     }
 
@@ -1862,6 +1989,7 @@ export class Game {
         const owned = it.kind === 'gear' && this.player.gearOwned.includes(id);
         if (owned) { chip.sfx('cancel'); return true; }
         if (this.player.zeni >= it.price) {
+          if (this.requestWorldAction('shop_buy', id)) return true;
           this.player.zeni -= it.price;
           if (it.kind === 'gear') {
             this.player.gearOwned.push(id);
@@ -1891,6 +2019,7 @@ export class Game {
           if (items.length && this.itemIdx < items.length) {
             const [id] = items[this.itemIdx];
             const it = ITEMS[id];
+            if (this.requestWorldAction('world_item', id)) return true;
             if (it.kind === 'heal') { this.player.hp = Math.min(this.maxHp(), this.player.hp + (it.power || 0)); }
             else if (it.kind === 'kiheal') { this.player.ki = Math.min(this.maxKi(), this.player.ki + (it.power || 0)); }
             else if (it.kind === 'fullheal') { this.player.hp = this.maxHp(); this.player.ki = this.maxKi(); }
