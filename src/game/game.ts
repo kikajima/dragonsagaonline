@@ -1195,16 +1195,18 @@ export class Game {
       }
     }
 
-    // dragon ball pickup
-    for (const b of [...this.ballEnts]) {
-      if (Math.hypot(b.x - this.px, b.y - this.py) < 14) {
-        this.player.balls.push(b.key);
-        this.ballEnts = this.ballEnts.filter((x) => x !== b);
-        chip.sfx('coin');
-        this.addChat({ name: 'Sistema', text: `Esfera do Dragão encontrada! (${this.player.balls.length}/7)`, color: '#f8a020', sys: true });
-        this.save();
-        if (this.player.balls.length >= 7) {
-          this.startDragon();
+    // Dragon Ball pickup is server-authoritative online.
+    if (!this.multiplayerActive) {
+      for (const b of [...this.ballEnts]) {
+        if (Math.hypot(b.x - this.px, b.y - this.py) < 14) {
+          this.player.balls.push(b.key);
+          this.ballEnts = this.ballEnts.filter((x) => x !== b);
+          chip.sfx('coin');
+          this.addChat({ name: 'Sistema', text: `Esfera do Dragão encontrada! (${this.player.balls.length}/7)`, color: '#f8a020', sys: true });
+          this.save();
+          if (this.player.balls.length >= 7) {
+            this.startDragon();
+          }
         }
       }
     }
@@ -1297,17 +1299,41 @@ export class Game {
   }
 
   masterDialog() {
-    const q = QUESTS[this.player.questIdx];
-    if (!q) {
-      this.showDialog([{ who: 'Mestre Kame', text: 'Você se tornou uma lenda viva! Continue caçando as Esferas do Dragão e ajudando os novatos!' }]);
+    const q = QUESTS[this.player.questIdx] || QUESTS[0];
+    if (!q) return;
+
+    if (this.multiplayerActive) {
+      if (q.id === 'q0') {
+        this.showDialog([
+          { who: 'Mestre Kame', text: `Saga ${this.player.sagaCycle}! ${this.player.name}, uma nova jornada começa agora.` },
+          { who: 'Mestre Kame', text: q.desc },
+          { who: 'Mestre Kame', text: 'Aceite o chamado e prove sua força mais uma vez!' },
+        ], () => {
+          if (this.questInteractHandler) {
+            this.questInteractHandler();
+          } else {
+            this.toast = { text: 'SERVIDOR DE MISSÕES INDISPONÍVEL', t: 2 };
+          }
+        });
+        return;
+      }
+
+      const progress = q.target
+        ? ` (${this.player.questProgress}/${q.count || 1})`
+        : '';
+      this.showDialog([
+        { who: 'Mestre Kame', text: `Saga ${this.player.sagaCycle} · Missão atual: ${q.title}${progress}` },
+        { who: 'Mestre Kame', text: q.desc },
+      ]);
       return;
     }
+
     const done = q.target ? this.player.questProgress >= (q.count || 1) : false;
     if (q.id === 'q0') {
       this.showDialog([
-        { who: 'Mestre Kame', text: `Ah, ${this.player.name}! Sentei o seu Ki de longe. Você tem potencial!` },
+        { who: 'Mestre Kame', text: `Saga ${this.player.sagaCycle}! Ah, ${this.player.name}! Senti o seu Ki de longe.` },
         { who: 'Mestre Kame', text: q.desc },
-        { who: 'Mestre Kame', text: 'Leve estes 300 zeni e fale com os aliados na cidade. E cuidado com as criaturas!' },
+        { who: 'Mestre Kame', text: 'Leve estes 300 zeni e siga em frente. E cuidado com as criaturas!' },
       ], () => {
         this.player.zeni += 300;
         this.player.questProgress = 1;
@@ -1316,13 +1342,15 @@ export class Game {
       });
       return;
     }
-    if (done && q.id !== 'q0') {
+
+    if (done) {
       this.completeQuest();
       this.showDialog([{ who: 'Mestre Kame', text: q.rewardText }]);
       return;
     }
+
     this.showDialog([
-      { who: 'Mestre Kame', text: `Missão atual: ${q.title}` },
+      { who: 'Mestre Kame', text: `Saga ${this.player.sagaCycle} · Missão atual: ${q.title}` },
       { who: 'Mestre Kame', text: q.desc },
     ]);
   }
@@ -1367,6 +1395,18 @@ export class Game {
   }
 
   applyWish(idx: number) {
+    if (this.multiplayerActive) {
+      const wish: 'power' | 'defense' | 'zeni' =
+        idx === 0 ? 'power' : idx === 1 ? 'defense' : 'zeni';
+      if (this.dragonWishHandler) {
+        this.toast = { text: 'SHENLONG ESTÁ JULGANDO O DESEJO...', t: 2 };
+        this.dragonWishHandler(wish);
+      } else {
+        this.toast = { text: 'SERVIDOR DE DESEJOS INDISPONÍVEL', t: 2 };
+      }
+      return;
+    }
+
     if (idx === 0) { this.player.baseAtk += 30; this.toast = { text: 'ATK permanentemente aumentado!', t: 3.5 }; }
     else if (idx === 1) { this.player.baseDef += 30; this.toast = { text: 'DEF permanentemente aumentada!', t: 3.5 }; }
     else { this.player.zeni += 5000; this.toast = { text: '+5.000 zeni!', t: 3.5 }; }
