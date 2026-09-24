@@ -85,6 +85,8 @@ export default function Home() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [saveError, setSaveError] = useState('');
   const [activeCharacterId, setActiveCharacterId] = useState<string | null>(null);
+  const [characterOptions, setCharacterOptions] = useState<CharacterRow[]>([]);
+  const [characterSelectionOpen, setCharacterSelectionOpen] = useState(false);
   const [multiplayerStatus, setMultiplayerStatus] = useState<MultiplayerStatus>(
     COLYSEUS_URL ? 'offline' : 'disabled',
   );
@@ -107,13 +109,17 @@ export default function Home() {
 
     try {
       const characters = await listCharacters();
-      characterRef.current = characters[0] || null;
-      setActiveCharacterId(characterRef.current?.id || null);
-    } catch (error) {
-      console.error('[supabase] load characters', error);
+      setCharacterOptions(characters);
       characterRef.current = null;
       setActiveCharacterId(null);
-      setAuthMessage(error instanceof Error ? error.message : 'Não foi possível carregar o personagem.');
+      setCharacterSelectionOpen(true);
+    } catch (error) {
+      console.error('[supabase] load characters', error);
+      setCharacterOptions([]);
+      characterRef.current = null;
+      setActiveCharacterId(null);
+      setCharacterSelectionOpen(true);
+      setAuthMessage(error instanceof Error ? error.message : 'Não foi possível carregar os personagens.');
     }
 
     setSession(nextSession);
@@ -137,6 +143,12 @@ export default function Home() {
           : await createCharacter(payload);
 
         characterRef.current = saved;
+        setCharacterOptions((currentOptions) => {
+          const exists = currentOptions.some((row) => row.id === saved.id);
+          return exists
+            ? currentOptions.map((row) => (row.id === saved.id ? saved : row))
+            : [saved, ...currentOptions];
+        });
         setActiveCharacterId(saved.id);
         setSaveStatus('saved');
       })
@@ -224,6 +236,8 @@ export default function Home() {
     sessionRef.current = null;
     await signOut();
     setSession(null);
+    setCharacterOptions([]);
+    setCharacterSelectionOpen(false);
     setActiveCharacterId(null);
     setMultiplayerStatus(COLYSEUS_URL ? 'offline' : 'disabled');
     setMultiplayerMessage('');
@@ -233,8 +247,46 @@ export default function Home() {
     setAuthMessage('');
   }, []);
 
+  const chooseCharacter = useCallback((character: CharacterRow) => {
+    characterRef.current = character;
+    setActiveCharacterId(character.id);
+    setCharacterSelectionOpen(false);
+    setSaveStatus('idle');
+    setSaveError('');
+  }, []);
+
+  const chooseNewCharacter = useCallback(() => {
+    characterRef.current = null;
+    setActiveCharacterId(null);
+    setCharacterSelectionOpen(false);
+    setSaveStatus('idle');
+    setSaveError('');
+  }, []);
+
+  const switchCharacter = useCallback(async () => {
+    await saveQueueRef.current.catch(() => undefined);
+    await multiplayerRef.current?.leave().catch(() => undefined);
+    multiplayerRef.current = null;
+
+    const game = gameRef.current;
+    if (game) {
+      game.setMultiplayerActive(false);
+      game.stop();
+    }
+    gameRef.current = null;
+    characterRef.current = null;
+    setActiveCharacterId(null);
+    setCharacterSelectionOpen(true);
+    setMultiplayerStatus(COLYSEUS_URL ? 'offline' : 'disabled');
+    setMultiplayerMessage('');
+    setSaveStatus('idle');
+    setSaveError('');
+    setShowChat(false);
+    setShowName(false);
+  }, []);
+
   useEffect(() => {
-    if (!authReady || !session || !canvasRef.current) return;
+    if (!authReady || !session || characterSelectionOpen || !canvasRef.current) return;
     if (!gameRef.current) {
       const game = new Game(canvasRef.current);
       gameRef.current = game;
@@ -300,7 +352,7 @@ export default function Home() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [authReady, session?.user.id, persistPlayer]);
+  }, [authReady, session?.user.id, persistPlayer, characterSelectionOpen, activeCharacterId]);
 
   useEffect(() => {
     if (!authReady || !session || !activeCharacterId) return;
@@ -766,6 +818,109 @@ export default function Home() {
     );
   }
 
+  if (characterSelectionOpen) {
+    const classNames: Record<string, string> = {
+      saiya: 'Saiya',
+      humano: 'Humano',
+      nameko: 'Nameko',
+      lutadora: 'Lutadora',
+    };
+
+    return (
+      <main className="min-h-screen w-full flex items-center justify-center bg-black p-4">
+        <section
+          className="w-full max-w-2xl p-6"
+          style={{ background: '#101828', border: '3px solid #f8d030' }}
+        >
+          <h1
+            className="text-center"
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 16,
+              color: '#f8d030',
+              lineHeight: 1.6,
+            }}
+          >
+            ESCOLHA SEU GUERREIRO
+          </h1>
+
+          <div className="mt-6 grid gap-3">
+            {characterOptions.map((character) => (
+              <button
+                key={character.id}
+                type="button"
+                onClick={() => chooseCharacter(character)}
+                className="w-full text-left"
+                style={{
+                  background: '#05070d',
+                  border: '2px solid #585878',
+                  padding: '14px',
+                  cursor: 'pointer',
+                }}
+              >
+                <div
+                  style={{
+                    fontFamily: '"Press Start 2P", monospace',
+                    fontSize: 9,
+                    color: '#fff',
+                  }}
+                >
+                  {character.name}
+                </div>
+                <div
+                  className="mt-2"
+                  style={{
+                    fontFamily: '"Press Start 2P", monospace',
+                    fontSize: 6,
+                    color: '#88c8f8',
+                    lineHeight: 1.8,
+                  }}
+                >
+                  {classNames[character.class_id] || character.class_id}
+                  {' · '}LV {character.level}
+                  {' · '}PL salvo na nuvem
+                </div>
+              </button>
+            ))}
+
+            <button
+              type="button"
+              onClick={chooseNewCharacter}
+              style={{
+                fontFamily: '"Press Start 2P", monospace',
+                fontSize: 8,
+                color: '#101828',
+                background: '#f8d030',
+                border: 'none',
+                padding: '14px',
+                cursor: 'pointer',
+              }}
+            >
+              + NOVO PERSONAGEM
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleSignOut()}
+            className="mt-5 w-full"
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 7,
+              color: '#a8b0c0',
+              background: 'transparent',
+              border: '1px solid #585878',
+              padding: '10px',
+              cursor: 'pointer',
+            }}
+          >
+            SAIR DA CONTA
+          </button>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main ref={pageRef} className="dso-game-page">
       <div
@@ -822,6 +977,21 @@ export default function Home() {
             TELA
           </button>
         )}
+        <button
+          onClick={() => void switchCharacter()}
+          title="Trocar personagem"
+          style={{
+            fontFamily: '"Press Start 2P", monospace',
+            fontSize: 6,
+            color: '#88c8f8',
+            background: 'transparent',
+            border: '1px solid #585878',
+            padding: '6px',
+            cursor: 'pointer',
+          }}
+        >
+          PERSONAGEM
+        </button>
         <button
           onClick={() => void handleSignOut()}
           title={saveError || 'Sair da conta'}
