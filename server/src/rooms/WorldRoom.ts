@@ -1,6 +1,13 @@
 import { Client, Room, ServerError } from "colyseus";
-
-type Direction = "down" | "up" | "left" | "right";
+import {
+  ENEMY_RULES,
+  MOB_SPAWNS,
+  canWalk,
+  computeCharacterStats,
+  expForLevel,
+  minimumBattleDurationMs,
+  type Direction,
+} from "../worldRules.js";
 
 interface CharacterRecord {
   id: string;
@@ -8,7 +15,10 @@ interface CharacterRecord {
   name: string;
   class_id: string;
   level: number;
+  xp: number;
   hp: number;
+  ki: number;
+  gold: number;
   state: Record<string, unknown> | null;
   x: number;
   y: number;
@@ -38,21 +48,47 @@ interface OnlinePlayer {
   lastPvpAttackAt: number;
 }
 
+interface WorldMob {
+  spawnId: string;
+  enemyId: string;
+  x: number;
+  y: number;
+  spawnX: number;
+  spawnY: number;
+  vx: number;
+  vy: number;
+  dead: boolean;
+  respawnAt: number;
+  isBoss: boolean;
+  engagedBy: string | null;
+  engagedUntil: number;
+  nextWanderAt: number;
+}
+
+interface ActiveEncounter {
+  battleId: string;
+  spawnId: string;
+  enemyId: string;
+  startedAt: number;
+}
+
 interface MovePayload {
   x?: number;
   y?: number;
   dir?: Direction;
+  seq?: number;
+}
+interface ChatPayload { text?: string; }
+interface PvpAttackPayload { targetSessionId?: string; }
+interface PveBeginPayload { spawnId?: string; }
+interface PveCompletePayload {
+  battleId?: string;
+  outcome?: "win" | "fled" | "lose";
+  hp?: number;
+  ki?: number;
 }
 
-interface ChatPayload {
-  text?: string;
-}
-
-interface PvpAttackPayload {
-  targetSessionId?: string;
-}
-
-const DIRECTIONS = new Set<Direction>(["down", "up", "left", "right"]);
+const DIRECTIONS = new Set<Direction>(["down","up","left","right"]);
 const MAX_CHAT_LENGTH = 80;
 const MAX_CLIENTS = 100;
 const BASE_MOVE_TOLERANCE = 14;
@@ -60,6 +96,8 @@ const MAX_SPEED_PER_SECOND = 120;
 const PVP_RANGE = 52;
 const PVP_ATTACK_COOLDOWN_MS = 700;
 const PVP_RESPAWN_MS = 5000;
+const PVE_RANGE = 34;
+const PVE_LOCK_MS = 60000;
 
 function publicPlayer(player: OnlinePlayer) {
   return {
@@ -75,211 +113,259 @@ function publicPlayer(player: OnlinePlayer) {
   };
 }
 
-function numberFrom(value: unknown, fallback = 0): number {
+function publicMob(mob: WorldMob) {
+  return {
+    spawnId: mob.spawnId,
+    enemyId: mob.enemyId,
+    x: mob.x,
+    y: mob.y,
+    dead: mob.dead,
+    isBoss: mob.isBoss,
+    respawnAt: mob.respawnAt,
+  };
+}
+
+function numberFrom(value: unknown, fallback = 0) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
 }
 
 function isFacing(attacker: OnlinePlayer, target: OnlinePlayer): boolean {
   const dx = target.x - attacker.x;
   const dy = target.y - attacker.y;
-  const distance = Math.hypot(dx, dy);
-  if (distance <= 0.001) return true;
-
-  const facing: [number, number] =
-    attacker.dir === "left" ? [-1, 0] :
-    attacker.dir === "right" ? [1, 0] :
-    attacker.dir === "up" ? [0, -1] :
-    [0, 1];
-
-  return (dx / distance) * facing[0] + (dy / distance) * facing[1] >= 0.15;
+  const d = Math.hypot(dx, dy);
+  if (d <= 0.001) return true;
+  const f: [number, number] =
+    attacker.dir === "left" ? [-1,0] :
+    attacker.dir === "right" ? [1,0] :
+    attacker.dir === "up" ? [0,-1] : [0,1];
+  return (dx / d) * f[0] + (dy / d) * f[1] >= 0.15;
 }
 
 function supabaseConfig() {
   const url = process.env.SUPABASE_URL;
   const publishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
-
-  if (!url || !publishableKey) {
-    throw new Error(
-      "SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY are required on the multiplayer server.",
-    );
-  }
-
+  if (!url || !publishableKey) throw new Error("Supabase server config missing.");
   return { url, publishableKey };
 }
 
-async function loadOwnedCharacter(
-  token: string,
-  characterId: string,
-): Promise<CharacterRecord | null> {
+async function loadOwnedCharacter(token: string, characterId: string): Promise<CharacterRecord | null> {
   const { url, publishableKey } = supabaseConfig();
   const query =
     `/rest/v1/characters?id=eq.${encodeURIComponent(characterId)}` +
-    "&select=id,user_id,name,class_id,level,hp,state,x,y&limit=1";
-
+    "&select=id,user_id,name,class_id,level,xp,hp,ki,gold,state,x,y&limit=1";
   const response = await fetch(`${url}${query}`, {
-    headers: {
-      apikey: publishableKey,
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
+    headers: { apikey: publishableKey, Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
-
   if (!response.ok) return null;
-
   const rows = (await response.json()) as CharacterRecord[];
   return rows[0] || null;
 }
 
 export class WorldRoom extends Room {
   maxClients = MAX_CLIENTS;
-
   private players = new Map<string, OnlinePlayer>();
+  private mobs = new Map<string, WorldMob>();
+  private encounters = new Map<string, ActiveEncounter>();
+  private lastMobBroadcastAt = 0;
 
-  static async onAuth(
-    token: string,
-    options: { characterId?: string },
-  ): Promise<AuthData> {
-    if (!token) {
-      throw new ServerError(401, "Supabase access token is required.");
+  onCreate() {
+    for (const def of MOB_SPAWNS) {
+      this.mobs.set(def.spawnId, {
+        ...def,
+        spawnX: def.x,
+        spawnY: def.y,
+        vx: 0,
+        vy: 0,
+        dead: false,
+        respawnAt: 0,
+        engagedBy: null,
+        engagedUntil: 0,
+        nextWanderAt: Date.now() + Math.random() * 2000,
+      });
     }
+    this.setSimulationInterval((dt) => this.updateMobs(dt), 100);
+  }
 
+  static async onAuth(token: string, options: { characterId?: string }): Promise<AuthData> {
+    if (!token) throw new ServerError(401, "Supabase access token is required.");
     const characterId = options?.characterId?.trim();
-    if (!characterId) {
-      throw new ServerError(400, "characterId is required.");
-    }
-
+    if (!characterId) throw new ServerError(400, "characterId is required.");
     const character = await loadOwnedCharacter(token, characterId);
+    if (!character) throw new ServerError(403, "Character not found or not owned by this account.");
+    return { userId: character.user_id, character };
+  }
 
-    if (!character) {
-      throw new ServerError(403, "Character not found or not owned by this account.");
+  private updateMobs(dtMs: number) {
+    const now = Date.now();
+    let changed = false;
+    for (const mob of this.mobs.values()) {
+      if (mob.dead) {
+        if (mob.respawnAt && now >= mob.respawnAt) {
+          mob.dead = false;
+          mob.respawnAt = 0;
+          mob.x = mob.spawnX;
+          mob.y = mob.spawnY;
+          mob.vx = 0;
+          mob.vy = 0;
+          mob.engagedBy = null;
+          mob.engagedUntil = 0;
+          changed = true;
+        }
+        continue;
+      }
+      if (mob.engagedBy && now > mob.engagedUntil) {
+        mob.engagedBy = null;
+        mob.engagedUntil = 0;
+      }
+      if (mob.isBoss || mob.engagedBy) continue;
+      if (now >= mob.nextWanderAt) {
+        mob.vx = (Math.random() - 0.5) * 2;
+        mob.vy = (Math.random() - 0.5) * 2;
+        mob.nextWanderAt = now + 1000 + Math.random() * 2000;
+      }
+      const dt = Math.min(0.2, dtMs / 1000);
+      const nx = mob.x + mob.vx * 26 * dt;
+      const ny = mob.y + mob.vy * 26 * dt;
+      if (canWalk(nx, mob.y)) mob.x = nx; else mob.vx = -mob.vx;
+      if (canWalk(mob.x, ny)) mob.y = ny; else mob.vy = -mob.vy;
+      changed = changed || Math.abs(mob.vx) + Math.abs(mob.vy) > 0.01;
     }
-
-    return {
-      userId: character.user_id,
-      character,
-    };
+    if (changed && now - this.lastMobBroadcastAt >= 250) {
+      this.lastMobBroadcastAt = now;
+      this.broadcast("mob_snapshot", Array.from(this.mobs.values(), publicMob));
+    }
   }
 
   messages = {
     move: (client: Client, payload: MovePayload) => {
       const player = this.players.get(client.sessionId);
-      if (!player) return;
-      if (player.pvpHp <= 0 || player.koUntil > Date.now()) return;
-
+      if (!player || player.pvpHp <= 0 || player.koUntil > Date.now()) return;
       const requestedX = Number(payload?.x);
       const requestedY = Number(payload?.y);
       if (!Number.isFinite(requestedX) || !Number.isFinite(requestedY)) return;
-
       const now = Date.now();
-      const elapsed = Math.max(
-        0.05,
-        Math.min(1, (now - player.lastMoveAt) / 1000),
-      );
-      const allowedDistance =
-        BASE_MOVE_TOLERANCE + MAX_SPEED_PER_SECOND * elapsed;
-
+      const elapsed = Math.max(0.05, Math.min(1, (now - player.lastMoveAt) / 1000));
+      const allowed = BASE_MOVE_TOLERANCE + MAX_SPEED_PER_SECOND * elapsed;
       const dx = requestedX - player.x;
       const dy = requestedY - player.y;
       const distance = Math.hypot(dx, dy);
-
-      if (distance > allowedDistance && distance > 0) {
-        const scale = allowedDistance / distance;
-        player.x += dx * scale;
-        player.y += dy * scale;
-      } else {
-        player.x = requestedX;
-        player.y = requestedY;
+      let nextX = requestedX;
+      let nextY = requestedY;
+      if (distance > allowed && distance > 0) {
+        const scale = allowed / distance;
+        nextX = player.x + dx * scale;
+        nextY = player.y + dy * scale;
       }
-
-      if (payload?.dir && DIRECTIONS.has(payload.dir)) {
-        player.dir = payload.dir;
-      }
-
+      if (canWalk(nextX, player.y)) player.x = nextX;
+      if (canWalk(player.x, nextY)) player.y = nextY;
+      if (payload?.dir && DIRECTIONS.has(payload.dir)) player.dir = payload.dir;
       player.lastMoveAt = now;
-
-      this.broadcast(
-        "player_move",
-        publicPlayer(player),
-        { except: client },
-      );
+      this.broadcast("player_move", { ...publicPlayer(player), seq: payload?.seq ?? 0 }, { except: client });
     },
 
     chat: (client: Client, payload: ChatPayload) => {
       const player = this.players.get(client.sessionId);
       if (!player) return;
-
-      const text = String(payload?.text || "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, MAX_CHAT_LENGTH);
-
+      const text = String(payload?.text || "").replace(/\s+/g, " ").trim().slice(0, MAX_CHAT_LENGTH);
       if (!text) return;
+      this.broadcast("chat", { sessionId: player.sessionId, name: player.name, text }, { except: client });
+    },
 
-      this.broadcast(
-        "chat",
-        {
-          sessionId: player.sessionId,
-          name: player.name,
-          text,
-        },
-        { except: client },
-      );
+    pve_begin: (client: Client, payload: PveBeginPayload) => {
+      const player = this.players.get(client.sessionId);
+      const mob = this.mobs.get(String(payload?.spawnId || ""));
+      if (!player || !mob) return;
+      const now = Date.now();
+      if (mob.dead) return client.send("pve_error", { message: "Esse inimigo já foi derrotado." });
+      if (mob.engagedBy && mob.engagedBy !== client.sessionId && mob.engagedUntil > now) {
+        return client.send("pve_error", { message: "Outro jogador já está enfrentando esse inimigo." });
+      }
+      if (Math.hypot(mob.x - player.x, mob.y - player.y) > PVE_RANGE) {
+        return client.send("pve_error", { message: "Chegue mais perto do inimigo." });
+      }
+      const battleId = crypto.randomUUID();
+      mob.engagedBy = client.sessionId;
+      mob.engagedUntil = now + PVE_LOCK_MS;
+      this.encounters.set(client.sessionId, { battleId, spawnId: mob.spawnId, enemyId: mob.enemyId, startedAt: now });
+      client.send("pve_begin", {
+        battleId,
+        spawnId: mob.spawnId,
+        enemyId: mob.enemyId,
+        isBoss: mob.isBoss,
+      });
+    },
+
+    pve_complete: (client: Client, payload: PveCompletePayload) => {
+      const player = this.players.get(client.sessionId);
+      const encounter = this.encounters.get(client.sessionId);
+      if (!player || !encounter || payload?.battleId !== encounter.battleId) return;
+      const mob = this.mobs.get(encounter.spawnId);
+      const enemy = ENEMY_RULES[encounter.enemyId];
+      if (!mob || !enemy) return;
+      this.encounters.delete(client.sessionId);
+      mob.engagedBy = null;
+      mob.engagedUntil = 0;
+
+      const outcome = payload?.outcome;
+      if (outcome !== "win") {
+        client.send("pve_result", {
+          outcome,
+          battleId: encounter.battleId,
+          hp: Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp))),
+          ki: Math.max(0, Math.floor(numberFrom(payload?.ki, 0))),
+        });
+        return;
+      }
+
+      const stats = computeCharacterStats({
+        classId: player.classId,
+        level: player.level,
+        baseAtk: 0,
+        baseDef: 0,
+        gearOwned: [],
+      });
+      const elapsed = Date.now() - encounter.startedAt;
+      if (elapsed < minimumBattleDurationMs(enemy, stats)) {
+        client.send("pve_error", { message: "Resultado de batalha inválido." });
+        return;
+      }
+
+      mob.dead = true;
+      mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
+      mob.vx = 0;
+      mob.vy = 0;
+      const drop = enemy.drop && Math.random() < enemy.drop.chance ? enemy.drop.id : null;
+      this.broadcast("mob_update", publicMob(mob));
+
+      client.send("pve_result", {
+        outcome: "win",
+        battleId: encounter.battleId,
+        spawnId: mob.spawnId,
+        enemyId: mob.enemyId,
+        exp: enemy.exp,
+        zeni: enemy.zeni,
+        drop,
+        hp: Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp))),
+        ki: Math.max(0, Math.floor(numberFrom(payload?.ki, 0))),
+      });
     },
 
     pvp_attack: (client: Client, payload: PvpAttackPayload) => {
       const attacker = this.players.get(client.sessionId);
-      if (!attacker) return;
-
-      const targetSessionId = String(payload?.targetSessionId || "").trim();
-      const target = this.players.get(targetSessionId);
-
-      const fail = (message: string) => {
-        client.send("pvp_error", { message });
-      };
-
-      if (!target || target.sessionId === attacker.sessionId) {
-        fail("Alvo PvP inválido.");
-        return;
-      }
-
+      const target = this.players.get(String(payload?.targetSessionId || "").trim());
+      if (!attacker || !target || target.sessionId === attacker.sessionId) return;
       const now = Date.now();
-
-      if (attacker.pvpHp <= 0 || attacker.koUntil > now) {
-        fail("Você está se recuperando do PvP.");
-        return;
-      }
-
-      if (target.pvpHp <= 0 || target.koUntil > now) {
-        fail("Esse jogador já foi derrotado.");
-        return;
-      }
-
-      if (now - attacker.lastPvpAttackAt < PVP_ATTACK_COOLDOWN_MS) {
-        return;
-      }
-
-      const distance = Math.hypot(target.x - attacker.x, target.y - attacker.y);
-      if (distance > PVP_RANGE) {
-        fail("Chegue mais perto para atacar.");
-        return;
-      }
-
-      if (!isFacing(attacker, target)) {
-        fail("Fique de frente para o jogador.");
-        return;
-      }
-
+      if (attacker.pvpHp <= 0 || attacker.koUntil > now || target.pvpHp <= 0 || target.koUntil > now) return;
+      if (now - attacker.lastPvpAttackAt < PVP_ATTACK_COOLDOWN_MS) return;
+      if (Math.hypot(target.x - attacker.x, target.y - attacker.y) > PVP_RANGE || !isFacing(attacker, target)) return;
       attacker.lastPvpAttackAt = now;
-
-      const variance = 0.88 + Math.random() * 0.24;
-      const damage = Math.max(
-        1,
-        Math.floor(attacker.attack * variance - target.defense * 0.42),
-      );
-
+      const damage = Math.max(1, Math.floor(attacker.attack * (0.88 + Math.random() * 0.24) - target.defense * 0.42));
       target.pvpHp = Math.max(0, target.pvpHp - damage);
-
       this.broadcast("pvp_hit", {
         attackerSessionId: attacker.sessionId,
         targetSessionId: target.sessionId,
@@ -289,27 +375,20 @@ export class WorldRoom extends Room {
         hp: target.pvpHp,
         maxHp: target.pvpMaxHp,
       });
-
       if (target.pvpHp > 0) return;
-
       target.koUntil = now + PVP_RESPAWN_MS;
-
       this.broadcast("pvp_ko", {
         attackerSessionId: attacker.sessionId,
         targetSessionId: target.sessionId,
         attackerName: attacker.name,
         targetName: target.name,
       });
-
-      const defeatedSessionId = target.sessionId;
+      const id = target.sessionId;
       setTimeout(() => {
-        const current = this.players.get(defeatedSessionId);
+        const current = this.players.get(id);
         if (!current || current !== target) return;
-
         current.pvpHp = current.pvpMaxHp;
         current.koUntil = 0;
-        current.lastPvpAttackAt = 0;
-
         this.broadcast("pvp_respawn", publicPlayer(current));
       }, PVP_RESPAWN_MS);
     },
@@ -317,58 +396,52 @@ export class WorldRoom extends Room {
 
   onJoin(client: Client, _options: unknown, auth: AuthData) {
     const character = auth.character;
-
     const state = character.state || {};
     const level = Math.max(1, Math.floor(numberFrom(character.level, 1)));
-    const baseAttack = numberFrom(state.baseAtk, 0);
-    const baseDefense = numberFrom(state.baseDef, 0);
-    const pvpMaxHp = Math.max(
-      100,
-      Math.floor(Math.max(numberFrom(character.hp, 0), 100 + level * 14)),
-    );
-
+    const stats = computeCharacterStats({
+      classId: character.class_id,
+      level,
+      baseAtk: numberFrom(state.baseAtk, 0),
+      baseDef: numberFrom(state.baseDef, 0),
+      gearOwned: stringArray(state.gearOwned),
+    });
     const player: OnlinePlayer = {
       sessionId: client.sessionId,
       userId: auth.userId,
       characterId: character.id,
       name: character.name,
       classId: character.class_id,
-      x: Number.isFinite(character.x) ? character.x : 0,
-      y: Number.isFinite(character.y) ? character.y : 0,
+      x: Number.isFinite(character.x) && canWalk(character.x, character.y) ? character.x : 19.5 * 16,
+      y: Number.isFinite(character.y) && canWalk(character.x, character.y) ? character.y : 43.5 * 16,
       dir: "down",
       level,
-      attack: Math.max(10, 12 + level * 2.6 + baseAttack),
-      defense: Math.max(6, 8 + level * 1.7 + baseDefense),
-      pvpHp: pvpMaxHp,
-      pvpMaxHp,
+      attack: stats.attack,
+      defense: stats.defense,
+      pvpHp: stats.maxHp,
+      pvpMaxHp: stats.maxHp,
       koUntil: 0,
       lastMoveAt: Date.now(),
       lastPvpAttackAt: 0,
     };
-
     this.players.set(client.sessionId, player);
-
-    client.send(
-      "snapshot",
-      Array.from(this.players.values(), publicPlayer),
-    );
-
-    this.broadcast(
-      "player_joined",
-      publicPlayer(player),
-      { except: client },
-    );
-
+    client.send("snapshot", Array.from(this.players.values(), publicPlayer));
+    client.send("mob_snapshot", Array.from(this.mobs.values(), publicMob));
+    this.broadcast("player_joined", publicPlayer(player), { except: client });
     this.broadcast("presence", { count: this.players.size });
   }
 
   onLeave(client: Client) {
-    if (!this.players.delete(client.sessionId)) return;
-
-    this.broadcast("player_left", {
-      sessionId: client.sessionId,
-    });
-
+    this.players.delete(client.sessionId);
+    const encounter = this.encounters.get(client.sessionId);
+    if (encounter) {
+      const mob = this.mobs.get(encounter.spawnId);
+      if (mob?.engagedBy === client.sessionId) {
+        mob.engagedBy = null;
+        mob.engagedUntil = 0;
+      }
+      this.encounters.delete(client.sessionId);
+    }
+    this.broadcast("player_left", { sessionId: client.sessionId });
     this.broadcast("presence", { count: this.players.size });
   }
 }
