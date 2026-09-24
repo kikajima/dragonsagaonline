@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  DRAGON_BALL_SPOTS,
   ENEMY_RULES,
+  ITEM_RULES,
+  QUEST_TARGETS,
   canWalk,
   computeCharacterStats,
   isPvpSafeZone,
@@ -42,4 +45,24 @@ test("battle validation duration stays bounded", () => {
 test("city is a PvP safe zone while the plains are not", () => {
   assert.equal(isPvpSafeZone(19.5 * 16, 30 * 16), true);
   assert.equal(isPvpSafeZone(44 * 16, 55 * 16), false);
+});
+
+
+test("Dragon Ball spots are seven unique authoritative locations", () => {
+  assert.equal(DRAGON_BALL_SPOTS.length, 7);
+  assert.equal(new Set(DRAGON_BALL_SPOTS.map((spot) => spot.key)).size, 7);
+});
+
+test("shop catalog keeps authoritative prices", () => {
+  assert.equal(ITEM_RULES.sensu?.price, 50);
+  assert.equal(ITEM_RULES.elixir?.price, 500);
+  assert.equal(ITEM_RULES.espada?.price, 4000);
+  assert.equal(ITEM_RULES.manto?.kind, "gear");
+});
+
+test("saga combat steps map to the expected enemy sequence", () => {
+  assert.deepEqual(
+    [1, 2, 3, 4, 5].map((index) => QUEST_TARGETS[index]?.enemyId),
+    ["saiba", "soldado", "radix", "nappos", "vegar"],
+  );
 });
