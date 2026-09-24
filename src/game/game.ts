@@ -79,6 +79,7 @@ interface RemotePlayerView extends RemotePlayerNetworkState {
 }
 
 interface Spawn {
+  spawnId?: string;
   enemyId: string;
   x: number; y: number;
   vx: number; vy: number;
@@ -88,6 +89,7 @@ interface Spawn {
   spawnX?: number;
   spawnY?: number;
   isBoss?: boolean;
+  serverControlled?: boolean;
   animT: number;
 }
 
@@ -110,6 +112,11 @@ export class Game {
   multiplayerActive = false;
   multiplayerSessionId = '';
   pvpAttackHandler: ((targetSessionId: string) => void) | null = null;
+  pveBeginHandler: ((spawnId: string) => void) | null = null;
+  pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
+  activePveBattleId = '';
+  activePveSpawnId = '';
+  pendingPveSpawnId = '';
   pvpHp = 0;
   pvpMaxHp = 0;
   pvpKnockedOut = false;
@@ -259,6 +266,9 @@ export class Game {
       this.pvpHp = 0;
       this.pvpMaxHp = 0;
       this.pvpKnockedOut = false;
+      this.activePveBattleId = '';
+      this.activePveSpawnId = '';
+      this.pendingPveSpawnId = '';
     }
   }
 
@@ -268,6 +278,126 @@ export class Game {
 
   setPvpAttackHandler(cb: ((targetSessionId: string) => void) | null) {
     this.pvpAttackHandler = cb;
+  }
+
+  setPveHandlers(
+    begin: ((spawnId: string) => void) | null,
+    complete: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null,
+  ) {
+    this.pveBeginHandler = begin;
+    this.pveCompleteHandler = complete;
+  }
+
+  setMobSnapshot(mobs: Array<{ spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }>) {
+    if (!this.multiplayerActive) return;
+    this.spawns = mobs.map((mob) => ({
+      spawnId: mob.spawnId,
+      enemyId: mob.enemyId,
+      x: mob.x,
+      y: mob.y,
+      vx: 0,
+      vy: 0,
+      wait: 0,
+      dead: mob.dead,
+      respawnT: mob.respawnAt > 0 ? Math.max(0, (mob.respawnAt - Date.now()) / 1000) : 0,
+      spawnX: mob.x,
+      spawnY: mob.y,
+      isBoss: mob.isBoss,
+      serverControlled: true,
+      animT: 0,
+    }));
+  }
+
+  upsertMob(mob: { spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }) {
+    if (!this.multiplayerActive) return;
+    const existing = this.spawns.find((spawn) => spawn.spawnId === mob.spawnId);
+    if (!existing) {
+      this.spawns.push({
+        spawnId: mob.spawnId,
+        enemyId: mob.enemyId,
+        x: mob.x,
+        y: mob.y,
+        vx: 0,
+        vy: 0,
+        wait: 0,
+        dead: mob.dead,
+        respawnT: mob.respawnAt > 0 ? Math.max(0, (mob.respawnAt - Date.now()) / 1000) : 0,
+        spawnX: mob.x,
+        spawnY: mob.y,
+        isBoss: mob.isBoss,
+        serverControlled: true,
+        animT: 0,
+      });
+      return;
+    }
+    existing.x = mob.x;
+    existing.y = mob.y;
+    existing.dead = mob.dead;
+    existing.isBoss = mob.isBoss;
+    existing.respawnT = mob.respawnAt > 0 ? Math.max(0, (mob.respawnAt - Date.now()) / 1000) : 0;
+  }
+
+  receivePveBegin(event: { battleId: string; spawnId: string; enemyId: string; isBoss: boolean }) {
+    if (!event?.battleId || this.state !== 'world') return;
+    this.pendingPveSpawnId = '';
+    this.activePveBattleId = event.battleId;
+    this.activePveSpawnId = event.spawnId;
+    this.lastDefeated = event.enemyId;
+    const spawn = this.spawns.find((item) => item.spawnId === event.spawnId) || null;
+    this.activeBoss = event.isBoss ? spawn : null;
+    this.startBattle([event.enemyId], event.isBoss);
+  }
+
+  receivePveResult(event: { outcome: 'win' | 'fled' | 'lose'; battleId: string; enemyId?: string; exp?: number; zeni?: number; drop?: string | null; hp?: number; ki?: number }) {
+    if (!event?.battleId || event.battleId !== this.activePveBattleId) return;
+    const enemyId = event.enemyId || this.lastDefeated;
+    this.activePveBattleId = '';
+    this.activePveSpawnId = '';
+    this.pendingPveSpawnId = '';
+
+    if (typeof event.hp === 'number') this.player.hp = Math.max(1, Math.floor(event.hp));
+    if (typeof event.ki === 'number') this.player.ki = Math.max(0, Math.floor(event.ki));
+
+    if (event.outcome === 'win') {
+      const exp = Math.max(0, Math.floor(event.exp || 0));
+      const zeni = Math.max(0, Math.floor(event.zeni || 0));
+      this.player.exp += exp;
+      this.player.zeni += zeni;
+      if (event.drop) this.player.items[event.drop] = (this.player.items[event.drop] || 0) + 1;
+      this.addChat({ name: 'Sistema', text: `${this.player.name} venceu uma batalha! +${exp} EXP`, color: '#f8d030', sys: true });
+
+      const q = QUESTS[this.player.questIdx];
+      if (q && q.target && enemyId && q.target === enemyId) {
+        this.player.questProgress++;
+        if (this.player.questProgress >= (q.count || 1)) this.completeQuest();
+        else this.addChat({ name: 'Quest', text: `${q.title}: ${this.player.questProgress}/${q.count}`, color: '#88c8f8', sys: true });
+      }
+
+      let leveled = false;
+      while (this.player.exp >= expForLevel(this.player.lv)) {
+        this.player.exp -= expForLevel(this.player.lv);
+        this.player.lv++;
+        leveled = true;
+      }
+      if (leveled) {
+        chip.sfx('levelup');
+        this.player.hp = this.maxHp();
+        this.player.ki = this.maxKi();
+        this.addChat({ name: 'Sistema', text: `${this.player.name} subiu para o nível ${this.player.lv}!`, color: '#88f0a0', sys: true });
+        if (this.player.lv >= 12 && !this.player.flags.super) {
+          this.player.flags.super = true;
+          this.toast = { text: 'FORMA SUPER DESBLOQUEADA!', t: 4 };
+        }
+      }
+    } else if (event.outcome === 'lose') {
+      this.player.hp = Math.floor(this.maxHp() / 2);
+      this.player.ki = Math.floor(this.maxKi() / 2);
+      this.player.zeni = Math.floor(this.player.zeni / 2);
+      this.px = 19.5 * T16;
+      this.py = 43.5 * T16;
+    }
+
+    this.save();
   }
 
   setPvpState(hp: number, maxHp: number, knockedOut = false) {
@@ -440,6 +570,22 @@ export class Game {
     const pf = this.battle.party[0];
     this.player.hp = Math.max(1, Math.floor(pf.hp));
     this.player.ki = Math.max(0, Math.floor(pf.ki));
+
+    if (this.multiplayerActive && this.activePveBattleId && this.pveCompleteHandler) {
+      this.player.items = Object.fromEntries(this.battle.inventory || []);
+      const outcome: 'win' | 'fled' | 'lose' = r.win ? 'win' : r.fled ? 'fled' : 'lose';
+      this.pveCompleteHandler({
+        battleId: this.activePveBattleId,
+        outcome,
+        hp: this.player.hp,
+        ki: this.player.ki,
+      });
+      this.battle = null;
+      this.state = 'world';
+      this.battleCooldown = 1.5;
+      chip.playSong(this.nearTown() ? 'town' : 'field');
+      return;
+    }
     if (r.win) {
       this.player.zeni += r.zeni;
       this.player.exp += r.exp;
@@ -736,6 +882,28 @@ export class Game {
     if (this.battleCooldown > 0) this.battleCooldown -= dt;
     for (const s of this.spawns) {
       s.animT += dt;
+
+      if (this.multiplayerActive && s.serverControlled) {
+        if (s.dead) continue;
+        if (
+          this.battleCooldown <= 0 &&
+          !this.pendingPveSpawnId &&
+          s.spawnId &&
+          Math.hypot(s.x - this.px, s.y - this.py) < 20
+        ) {
+          const q = QUESTS[this.player.questIdx];
+          if (s.isBoss && (!q || q.target !== s.enemyId)) {
+            this.toast = { text: 'Esse poder é enorme... prepare-se primeiro!', t: 2.5 };
+            this.battleCooldown = 2;
+          } else if (this.pveBeginHandler) {
+            this.pendingPveSpawnId = s.spawnId;
+            this.battleCooldown = 1;
+            this.pveBeginHandler(s.spawnId);
+          }
+        }
+        continue;
+      }
+
       if (s.dead) {
         s.respawnT -= dt;
         if (s.respawnT <= 0) {
