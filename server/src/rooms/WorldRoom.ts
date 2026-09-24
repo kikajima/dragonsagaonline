@@ -354,6 +354,7 @@ export class WorldRoom extends Room {
   private players = new Map<string, OnlinePlayer>();
   private mobs = new Map<string, WorldMob>();
   private encounters = new Map<string, ActiveEncounter>();
+  private collectingBalls = new Set<string>();
   private lastMobBroadcastAt = 0;
 
   onCreate() {
@@ -381,6 +382,79 @@ export class WorldRoom extends Room {
     const character = await loadOwnedCharacter(token, characterId);
     if (!character) throw new ServerError(403, "Character not found or not owned by this account.");
     return { userId: character.user_id, accessToken: token, character };
+  }
+
+  private syncPlayerFromSnapshot(player: OnlinePlayer, snapshot: RewardCharacterSnapshot) {
+    player.level = Math.max(1, Math.floor(numberFrom(snapshot.level, player.level)));
+    player.gold = Math.max(0, Math.floor(numberFrom(snapshot.gold, player.gold)));
+    player.baseAtk = Math.max(0, Math.floor(numberFrom(snapshot.base_atk, player.baseAtk)));
+    player.baseDef = Math.max(0, Math.floor(numberFrom(snapshot.base_def, player.baseDef)));
+    player.items = numberRecord(snapshot.items);
+    player.gearOwned = stringArray(snapshot.gear_owned);
+    player.dragonBalls = stringArray(snapshot.dragon_balls);
+    player.flags = objectRecord(snapshot.flags);
+    player.questIndex = Math.max(0, Math.floor(numberFrom(snapshot.quest_index, player.questIndex)));
+    player.questProgress = Math.max(0, Math.floor(numberFrom(snapshot.quest_progress, player.questProgress)));
+    player.sagaCycle = Math.max(1, Math.floor(numberFrom(snapshot.saga_cycle, player.sagaCycle)));
+
+    const stats = computeCharacterStats({
+      classId: player.classId,
+      level: player.level,
+      baseAtk: player.baseAtk,
+      baseDef: player.baseDef,
+      gearOwned: player.gearOwned,
+    });
+
+    player.attack = stats.attack;
+    player.defense = stats.defense;
+    player.maxHp = stats.maxHp;
+    player.maxKi = stats.maxKi;
+    player.combatHp = Math.max(1, Math.min(stats.maxHp, Math.floor(numberFrom(snapshot.hp, player.combatHp))));
+    player.combatKi = Math.max(0, Math.min(stats.maxKi, Math.floor(numberFrom(snapshot.ki, player.combatKi))));
+    player.canSuper = Boolean(player.flags.super) || player.level >= 12;
+    player.pvpMaxHp = stats.maxHp;
+    player.pvpHp = Math.min(Math.max(0, player.pvpHp), player.pvpMaxHp);
+  }
+
+  private async runCharacterAction(
+    client: Client,
+    player: OnlinePlayer,
+    action: string,
+    data: Record<string, unknown> = {},
+  ): Promise<RewardCharacterSnapshot | null> {
+    try {
+      const snapshot = await applyCharacterAction(player, action, data);
+      this.syncPlayerFromSnapshot(player, snapshot);
+      client.send("character_sync", snapshot);
+      return snapshot;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Ação indisponível.";
+      console.error(`[character_action:${action}]`, error);
+      client.send("action_error", { action, message });
+      return null;
+    }
+  }
+
+  private async maybeCollectDragonBall(client: Client, player: OnlinePlayer) {
+    if (this.encounters.has(client.sessionId)) return;
+
+    for (const spot of DRAGON_BALL_SPOTS) {
+      if (player.dragonBalls.includes(spot.key)) continue;
+      if (Math.hypot(player.x - spot.x, player.y - spot.y) > 18) continue;
+
+      const lockKey = `${player.characterId}:${spot.key}`;
+      if (this.collectingBalls.has(lockKey)) return;
+      this.collectingBalls.add(lockKey);
+
+      try {
+        await this.runCharacterAction(client, player, "collect_ball", {
+          ball_key: spot.key,
+        });
+      } finally {
+        this.collectingBalls.delete(lockKey);
+      }
+      return;
+    }
   }
 
   private updateMobs(dtMs: number) {
@@ -440,7 +514,7 @@ export class WorldRoom extends Room {
       client.send("auth_refresh_ok", {});
     },
 
-    move: (client: Client, payload: MovePayload) => {
+    move: async (client: Client, payload: MovePayload) => {
       const player = this.players.get(client.sessionId);
       if (!player || player.pvpHp <= 0 || player.koUntil > Date.now()) return;
       const requestedX = Number(payload?.x);
@@ -471,6 +545,7 @@ export class WorldRoom extends Room {
         seq,
       });
       this.broadcast("player_move", { ...publicPlayer(player), seq }, { except: client });
+      await this.maybeCollectDragonBall(client, player);
     },
 
     chat: (client: Client, payload: ChatPayload) => {
