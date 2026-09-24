@@ -2,11 +2,11 @@ import { Client, Room, ServerError } from "colyseus";
 import {
   ENEMY_RULES,
   MOB_SPAWNS,
+  SKILL_RULES,
+  canUseSkill,
   canWalk,
   computeCharacterStats,
-  expForLevel,
   isPvpSafeZone,
-  minimumBattleDurationMs,
   type Direction,
 } from "../worldRules.js";
 
@@ -44,6 +44,13 @@ interface OnlinePlayer {
   level: number;
   attack: number;
   defense: number;
+  maxHp: number;
+  maxKi: number;
+  combatHp: number;
+  combatKi: number;
+  flags: Record<string, unknown>;
+  items: Record<string, number>;
+  canSuper: boolean;
   pvpHp: number;
   pvpMaxHp: number;
   koUntil: number;
@@ -74,6 +81,15 @@ interface ActiveEncounter {
   spawnId: string;
   enemyId: string;
   startedAt: number;
+  playerHp: number;
+  playerKi: number;
+  enemyHp: number;
+  enemyMaxHp: number;
+  buffed: boolean;
+  transformed: boolean;
+  defending: boolean;
+  lastActionAt: number;
+  outcome: "active" | "win" | "lose" | "fled";
 }
 
 interface MovePayload {
@@ -85,6 +101,12 @@ interface MovePayload {
 interface ChatPayload { text?: string; }
 interface PvpAttackPayload { targetSessionId?: string; }
 interface PveBeginPayload { spawnId?: string; }
+interface PveActionPayload {
+  battleId?: string;
+  action?: "attack" | "skill" | "item" | "defend" | "flee" | "transform";
+  skillId?: string;
+  itemId?: string;
+}
 interface PveCompletePayload {
   battleId?: string;
   outcome?: "win" | "fled" | "lose";
@@ -136,6 +158,29 @@ function numberFrom(value: unknown, fallback = 0) {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [];
+}
+
+function numberRecord(value: unknown): Record<string, number> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) out[key] = Math.floor(n);
+  }
+  return out;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function combatDamage(attack: number, defense: number, power = 1, defending = false): number {
+  const raw =
+    attack * power * (0.85 + Math.random() * 0.3) -
+    defense * (defending ? 1.6 : 1) * 0.5;
+  return Math.max(1, Math.floor(raw));
 }
 
 function isFacing(attacker: OnlinePlayer, target: OnlinePlayer): boolean {
@@ -366,7 +411,13 @@ export class WorldRoom extends Room {
       const player = this.players.get(client.sessionId);
       const mob = this.mobs.get(String(payload?.spawnId || ""));
       if (!player || !mob) return;
+      const enemy = ENEMY_RULES[mob.enemyId];
+      if (!enemy) return;
+
       const now = Date.now();
+      if (this.encounters.has(client.sessionId)) {
+        return client.send("pve_error", { message: "Você já está em uma batalha." });
+      }
       if (mob.dead) return client.send("pve_error", { message: "Esse inimigo já foi derrotado." });
       if (mob.engagedBy && mob.engagedBy !== client.sessionId && mob.engagedUntil > now) {
         return client.send("pve_error", { message: "Outro jogador já está enfrentando esse inimigo." });
@@ -374,15 +425,165 @@ export class WorldRoom extends Room {
       if (Math.hypot(mob.x - player.x, mob.y - player.y) > PVE_RANGE) {
         return client.send("pve_error", { message: "Chegue mais perto do inimigo." });
       }
+
       const battleId = crypto.randomUUID();
       mob.engagedBy = client.sessionId;
       mob.engagedUntil = now + PVE_LOCK_MS;
-      this.encounters.set(client.sessionId, { battleId, spawnId: mob.spawnId, enemyId: mob.enemyId, startedAt: now });
+
+      const encounter: ActiveEncounter = {
+        battleId,
+        spawnId: mob.spawnId,
+        enemyId: mob.enemyId,
+        startedAt: now,
+        playerHp: Math.max(1, Math.min(player.maxHp, player.combatHp)),
+        playerKi: Math.max(0, Math.min(player.maxKi, player.combatKi)),
+        enemyHp: enemy.hp,
+        enemyMaxHp: enemy.hp,
+        buffed: false,
+        transformed: false,
+        defending: false,
+        lastActionAt: 0,
+        outcome: "active",
+      };
+
+      this.encounters.set(client.sessionId, encounter);
       client.send("pve_begin", {
         battleId,
         spawnId: mob.spawnId,
         enemyId: mob.enemyId,
         isBoss: mob.isBoss,
+        playerHp: encounter.playerHp,
+        playerKi: encounter.playerKi,
+        enemyHp: encounter.enemyHp,
+        enemyMaxHp: encounter.enemyMaxHp,
+      });
+    },
+
+    pve_action: (client: Client, payload: PveActionPayload) => {
+      const player = this.players.get(client.sessionId);
+      const encounter = this.encounters.get(client.sessionId);
+      if (!player || !encounter || payload?.battleId !== encounter.battleId) return;
+      if (encounter.outcome !== "active") return;
+
+      const enemy = ENEMY_RULES[encounter.enemyId];
+      if (!enemy) return;
+
+      const now = Date.now();
+      if (now - encounter.lastActionAt < 220) return;
+      encounter.lastActionAt = now;
+
+      const action = payload.action;
+      let acted = false;
+
+      const effectiveAttack =
+        player.attack *
+        (encounter.buffed ? 1.3 : 1) *
+        (encounter.transformed ? 1.8 : 1);
+
+      if (action === "attack") {
+        encounter.enemyHp = Math.max(
+          0,
+          encounter.enemyHp - combatDamage(effectiveAttack, enemy.def),
+        );
+        acted = true;
+      } else if (action === "skill") {
+        const skillId = String(payload.skillId || "");
+        const skill = SKILL_RULES[skillId];
+        if (
+          skill &&
+          canUseSkill(player.classId, player.level, skillId, player.flags) &&
+          encounter.playerKi >= skill.cost
+        ) {
+          encounter.playerKi -= skill.cost;
+          if (skill.kind === "heal") {
+            const heal = Math.floor(
+              encounter.playerKi * skill.power * 0.9 + effectiveAttack * 0.5,
+            );
+            encounter.playerHp = Math.min(player.maxHp, encounter.playerHp + heal);
+          } else if (skill.kind === "buff") {
+            encounter.buffed = true;
+          } else {
+            const hits = skill.kind === "multi" ? 2 : 1;
+            for (let i = 0; i < hits; i++) {
+              encounter.enemyHp = Math.max(
+                0,
+                encounter.enemyHp - combatDamage(effectiveAttack, enemy.def, skill.power),
+              );
+            }
+          }
+          acted = true;
+        }
+      } else if (action === "item") {
+        const itemId = String(payload.itemId || "");
+        const quantity = player.items[itemId] || 0;
+        if (quantity > 0 && ["sensu", "capsula", "elixir"].includes(itemId)) {
+          player.items[itemId] = quantity - 1;
+          if (itemId === "sensu") encounter.playerHp = Math.min(player.maxHp, encounter.playerHp + 100);
+          if (itemId === "capsula") encounter.playerKi = Math.min(player.maxKi, encounter.playerKi + 60);
+          if (itemId === "elixir") {
+            encounter.playerHp = player.maxHp;
+            encounter.playerKi = player.maxKi;
+          }
+          acted = true;
+        }
+      } else if (action === "defend") {
+        encounter.defending = true;
+        acted = true;
+      } else if (action === "transform") {
+        if (player.canSuper && !encounter.transformed && encounter.playerKi >= 20) {
+          encounter.transformed = true;
+          acted = true;
+        }
+      } else if (action === "flee") {
+        if (!enemy.boss && Math.random() < 0.7) {
+          encounter.outcome = "fled";
+          acted = true;
+        } else {
+          acted = true;
+        }
+      }
+
+      if (!acted) {
+        client.send("pve_state", {
+          battleId: encounter.battleId,
+          playerHp: encounter.playerHp,
+          playerKi: encounter.playerKi,
+          enemyHp: encounter.enemyHp,
+          enemyMaxHp: encounter.enemyMaxHp,
+          outcome: encounter.outcome,
+        });
+        return;
+      }
+
+      if (encounter.enemyHp <= 0) {
+        encounter.outcome = "win";
+      } else if (encounter.outcome === "active") {
+        const enemyDamage = combatDamage(
+          enemy.atk,
+          player.defense,
+          1,
+          encounter.defending,
+        );
+        encounter.defending = false;
+        encounter.playerHp = Math.max(0, encounter.playerHp - enemyDamage);
+        if (encounter.playerHp <= 0) encounter.outcome = "lose";
+
+        if (encounter.transformed) {
+          encounter.playerKi = Math.max(0, encounter.playerKi - 4);
+          if (encounter.playerKi <= 0) encounter.transformed = false;
+        }
+      }
+
+      player.combatHp = Math.max(1, encounter.playerHp);
+      player.combatKi = encounter.playerKi;
+
+      client.send("pve_state", {
+        battleId: encounter.battleId,
+        playerHp: encounter.playerHp,
+        playerKi: encounter.playerKi,
+        enemyHp: encounter.enemyHp,
+        enemyMaxHp: encounter.enemyMaxHp,
+        outcome: encounter.outcome,
       });
     },
 
@@ -393,41 +594,35 @@ export class WorldRoom extends Room {
       const mob = this.mobs.get(encounter.spawnId);
       const enemy = ENEMY_RULES[encounter.enemyId];
       if (!mob || !enemy) return;
-      this.encounters.delete(client.sessionId);
-      mob.engagedBy = null;
-      mob.engagedUntil = 0;
+      const requestedOutcome = payload?.outcome;
 
-      const outcome = payload?.outcome;
-      if (outcome !== "win") {
+      if (requestedOutcome === "win" && encounter.outcome !== "win") {
+        client.send("pve_error", { message: "O servidor ainda não confirmou a vitória." });
+        return;
+      }
+
+      if (requestedOutcome !== "win") {
+        this.encounters.delete(client.sessionId);
+        mob.engagedBy = null;
+        mob.engagedUntil = 0;
+
+        const outcome =
+          encounter.outcome === "lose" ? "lose" :
+          encounter.outcome === "fled" ? "fled" :
+          requestedOutcome;
+
         client.send("pve_result", {
           outcome,
           battleId: encounter.battleId,
-          hp: Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp))),
-          ki: Math.max(0, Math.floor(numberFrom(payload?.ki, 0))),
+          hp: Math.max(1, encounter.playerHp),
+          ki: Math.max(0, encounter.playerKi),
         });
         return;
       }
 
-      const stats = computeCharacterStats({
-        classId: player.classId,
-        level: player.level,
-        baseAtk: 0,
-        baseDef: 0,
-        gearOwned: [],
-      });
-      const elapsed = Date.now() - encounter.startedAt;
-      if (elapsed < minimumBattleDurationMs(enemy, stats)) {
-        client.send("pve_error", { message: "Resultado de batalha inválido." });
-        return;
-      }
-
-      mob.dead = true;
-      mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
-      mob.vx = 0;
-      mob.vy = 0;
       const drop = enemy.drop && Math.random() < enemy.drop.chance ? enemy.drop.id : null;
-      const hp = Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp)));
-      const ki = Math.max(0, Math.floor(numberFrom(payload?.ki, 0)));
+      const hp = Math.max(1, encounter.playerHp);
+      const ki = Math.max(0, encounter.playerKi);
 
       try {
         const character = await applyAuthoritativeReward(
@@ -440,7 +635,13 @@ export class WorldRoom extends Room {
           ki,
         );
 
+        this.encounters.delete(client.sessionId);
+        mob.engagedBy = null;
+        mob.engagedUntil = 0;
+
         player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
+        player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, hp)));
+        player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, ki)));
         const state = character.state || {};
         const stats = computeCharacterStats({
           classId: player.classId,
@@ -551,6 +752,13 @@ export class WorldRoom extends Room {
       level,
       attack: stats.attack,
       defense: stats.defense,
+      maxHp: stats.maxHp,
+      maxKi: stats.maxKi,
+      combatHp: Math.max(1, Math.min(stats.maxHp, Math.floor(numberFrom(character.hp, stats.maxHp)))),
+      combatKi: Math.max(0, Math.min(stats.maxKi, Math.floor(numberFrom(character.ki, stats.maxKi)))),
+      flags: objectRecord(state.flags),
+      items: numberRecord(state.items),
+      canSuper: Boolean(objectRecord(state.flags).super) || level >= 12,
       pvpHp: stats.maxHp,
       pvpMaxHp: stats.maxHp,
       koUntil: 0,
