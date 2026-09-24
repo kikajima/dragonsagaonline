@@ -809,8 +809,8 @@ export class WorldRoom extends Room {
 
       try {
         const result = await executeItemTrade(a, b, trade.tradeId, offerA, offerB);
-        syncOnlinePlayer(a, result.character_a);
-        syncOnlinePlayer(b, result.character_b);
+        syncOnlinePlayer(a, { ...result.character_a, state: result.character_a.state || {} });
+        syncOnlinePlayer(b, { ...result.character_b, state: result.character_b.state || {} });
         this.trades.delete(trade.tradeId);
 
         this.clientBySessionId(a.sessionId)?.send("trade_complete", {
@@ -844,6 +844,9 @@ export class WorldRoom extends Room {
       if (!enemy) return;
 
       const now = Date.now();
+      if (this.tradeForSession(client.sessionId)) {
+        return client.send("pve_error", { message: "Finalize ou cancele a troca antes de batalhar." });
+      }
       const existingEncounter = this.encounters.get(client.sessionId);
       if (existingEncounter) {
         const existingMob = this.mobs.get(existingEncounter.spawnId);
@@ -1161,6 +1164,9 @@ export class WorldRoom extends Room {
       }
       if (this.encounters.has(attacker.sessionId) || this.encounters.has(target.sessionId)) {
         return fail("PvP indisponível durante uma batalha PvE.");
+      }
+      if (this.tradeForSession(attacker.sessionId) || this.tradeForSession(target.sessionId)) {
+        return fail("PvP indisponível durante uma troca.");
       }
       if (now - attacker.lastPvpAttackAt < PVP_ATTACK_COOLDOWN_MS) return;
       if (Math.hypot(target.x - attacker.x, target.y - attacker.y) > PVP_RANGE || !isFacing(attacker, target)) return;
