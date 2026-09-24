@@ -98,6 +98,7 @@ interface ActiveEncounter {
   sagaCycle: number;
   difficultyMultiplier: number;
   rewardMultiplier: number;
+  maxPotentialDamage: number;
   buffed: boolean;
   transformed: boolean;
   defending: boolean;
@@ -1153,6 +1154,7 @@ export class WorldRoom extends Room {
         sagaCycle: scaledEnemy.sagaCycle,
         difficultyMultiplier: scaledEnemy.difficultyMultiplier,
         rewardMultiplier: scaledEnemy.rewardMultiplier,
+        maxPotentialDamage: 0,
         buffed: false,
         transformed: false,
         defending: false,
@@ -1198,6 +1200,10 @@ export class WorldRoom extends Room {
         (encounter.transformed ? 1.8 : 1);
 
       if (action === "attack") {
+        encounter.maxPotentialDamage += Math.max(
+          1,
+          Math.floor(effectiveAttack * 1.15 - encounter.enemyDefense * 0.5),
+        );
         encounter.enemyHp = Math.max(
           0,
           encounter.enemyHp - combatDamage(effectiveAttack, encounter.enemyDefense),
@@ -1221,6 +1227,14 @@ export class WorldRoom extends Room {
             encounter.buffed = true;
           } else {
             const hits = skill.kind === "multi" ? 2 : 1;
+            const maxSkillHit = Math.max(
+              1,
+              Math.floor(
+                effectiveAttack * skill.power * 1.15 -
+                encounter.enemyDefense * 0.5
+              ),
+            );
+            encounter.maxPotentialDamage += maxSkillHit * hits;
             for (let i = 0; i < hits; i++) {
               encounter.enemyHp = Math.max(
                 0,
@@ -1333,7 +1347,31 @@ export class WorldRoom extends Room {
       const requestedOutcome = payload?.outcome;
 
       if (requestedOutcome === "win" && encounter.outcome !== "win") {
-        client.send("pve_error", { message: "O servidor ainda não confirmou a vitória." });
+        const remainingRatio = encounter.enemyHp / Math.max(1, encounter.enemyMaxHp);
+        const plausibleLegacyWin =
+          encounter.maxPotentialDamage >= encounter.enemyMaxHp &&
+          remainingRatio <= 0.35;
+
+        if (plausibleLegacyWin) {
+          encounter.enemyHp = 0;
+          this.finalizePveVictory(client, player, encounter, mob, enemy);
+          return;
+        }
+
+        client.send("pve_state", {
+          battleId: encounter.battleId,
+          playerHp: encounter.playerHp,
+          playerKi: encounter.playerKi,
+          enemyHp: encounter.enemyHp,
+          enemyMaxHp: encounter.enemyMaxHp,
+          outcome: encounter.outcome,
+        });
+        mob.engagedBy = null;
+        mob.engagedUntil = 0;
+        this.encounters.delete(client.sessionId);
+        client.send("pve_error", {
+          message: "A batalha perdeu sincronização. O encontro foi liberado; tente novamente.",
+        });
         return;
       }
 
