@@ -598,7 +598,7 @@ export class WorldRoom extends Room {
       });
     },
 
-    pve_action: (client: Client, payload: PveActionPayload) => {
+    pve_action: async (client: Client, payload: PveActionPayload) => {
       const player = this.players.get(client.sessionId);
       const encounter = this.encounters.get(client.sessionId);
       if (!player || !encounter || payload?.battleId !== encounter.battleId) return;
@@ -656,14 +656,32 @@ export class WorldRoom extends Room {
         const itemId = String(payload.itemId || "");
         const quantity = player.items[itemId] || 0;
         if (quantity > 0 && ["sensu", "capsula", "elixir"].includes(itemId)) {
-          player.items[itemId] = quantity - 1;
-          if (itemId === "sensu") encounter.playerHp = Math.min(player.maxHp, encounter.playerHp + 100);
-          if (itemId === "capsula") encounter.playerKi = Math.min(player.maxKi, encounter.playerKi + 60);
+          let nextHp = encounter.playerHp;
+          let nextKi = encounter.playerKi;
+          if (itemId === "sensu") nextHp = Math.min(player.maxHp, nextHp + 100);
+          if (itemId === "capsula") nextKi = Math.min(player.maxKi, nextKi + 60);
           if (itemId === "elixir") {
-            encounter.playerHp = player.maxHp;
-            encounter.playerKi = player.maxKi;
+            nextHp = player.maxHp;
+            nextKi = player.maxKi;
           }
-          acted = true;
+
+          try {
+            const character = await applyWorldAction(
+              player,
+              "world_item",
+              itemId,
+              nextHp,
+              nextKi,
+            );
+            syncOnlinePlayer(player, character);
+            encounter.playerHp = player.combatHp;
+            encounter.playerKi = player.combatKi;
+            acted = true;
+          } catch (error) {
+            console.error("[pve_item]", error);
+            client.send("pve_error", { message: "Não foi possível usar esse item." });
+            return;
+          }
         }
       } else if (action === "defend") {
         encounter.defending = true;
