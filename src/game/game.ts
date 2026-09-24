@@ -714,6 +714,9 @@ export class Game {
     playerKi: number;
     enemyHp: number;
     enemyMaxHp: number;
+    sagaCycle: number;
+    difficultyMultiplier: number;
+    rewardMultiplier: number;
   }) {
     if (!event?.battleId || this.state !== 'world') return;
     this.pendingPveSpawnId = '';
@@ -725,6 +728,15 @@ export class Game {
     this.startBattle([event.enemyId], event.isBoss);
     this.fade = Math.max(this.fade, 0.42);
     this.fadeDir = -1;
+    const sagaNumber = Math.max(1, Math.floor(event.sagaCycle || 0) + 1);
+    const difficultyPct = Math.max(0, Math.round(((event.difficultyMultiplier || 1) - 1) * 100));
+    const rewardPct = Math.max(0, Math.round(((event.rewardMultiplier || 1) - 1) * 100));
+    if (event.sagaCycle > 0) {
+      this.toast = {
+        text: `SAGA ${sagaNumber} · INIMIGO +${difficultyPct}% HP · RECOMPENSA +${rewardPct}%`,
+        t: 3,
+      };
+    }
     this.battle?.syncAuthoritativeState({
       playerHp: event.playerHp,
       playerKi: event.playerKi,
@@ -771,6 +783,9 @@ export class Game {
     ki?: number;
     x?: number;
     y?: number;
+    sagaCycle?: number;
+    difficultyMultiplier?: number;
+    rewardMultiplier?: number;
     character?: {
       id: string;
       level: number;
@@ -2056,7 +2071,15 @@ export class Game {
     if (q) {
       const lines = wrapText(g, `${q.title}: ${q.desc}`, 210, 6);
       panel(g, mmX - 224, mmY - 4, 220, 14 + lines.length * 10, '#585878');
-      pText(g, `SAGA ${(this.player.sagaCycle || 0) + 1} · MISSAO`, mmX - 216, mmY + 2, 7, '#f8d030');
+      const rewardBonus = Math.max(0, (this.player.sagaCycle || 0) * 20);
+      pText(
+        g,
+        `SAGA ${(this.player.sagaCycle || 0) + 1} · MISSAO${rewardBonus > 0 ? ` · +${rewardBonus}% RECOMP.` : ''}`,
+        mmX - 216,
+        mmY + 2,
+        7,
+        '#f8d030',
+      );
       lines.forEach((l, i) => pText(g, l, mmX - 216, mmY + 14 + i * 10, 6, '#e8e8f0'));
     }
 
