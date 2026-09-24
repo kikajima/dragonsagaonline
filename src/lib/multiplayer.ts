@@ -186,6 +186,7 @@ export interface MultiplayerCallbacks {
   onPlayerLeft?: (sessionId: string) => void;
   onChat?: (message: MultiplayerChat) => void;
   onPresence?: (count: number) => void;
+  onLatency?: (rttMs: number) => void;
   onPvpState?: (player: MultiplayerPlayer) => void;
   onPvpHit?: (event: MultiplayerPvpHit) => void;
   onPvpKo?: (event: MultiplayerPvpKo) => void;
@@ -271,6 +272,8 @@ export async function connectMultiplayer(options: {
   }
 
   const ownSessionId = room.sessionId;
+  let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let smoothedRtt: number | null = null;
 
   room.onMessage('snapshot', (players: MultiplayerPlayer[]) => {
     const list = Array.isArray(players) ? players : [];
@@ -323,6 +326,14 @@ export async function connectMultiplayer(options: {
     if (Number.isFinite(count)) {
       options.callbacks?.onPresence?.(Math.max(1, Math.floor(count)));
     }
+  });
+
+  room.onMessage('pong', (payload: { clientTime?: number }) => {
+    const clientTime = Number(payload?.clientTime);
+    if (!Number.isFinite(clientTime)) return;
+    const sample = Math.max(0, Date.now() - clientTime);
+    smoothedRtt = smoothedRtt === null ? sample : smoothedRtt * 0.7 + sample * 0.3;
+    options.callbacks?.onLatency?.(Math.round(smoothedRtt));
   });
 
   room.onMessage('pvp_hit', (event: MultiplayerPvpHit) => {
@@ -410,6 +421,10 @@ export async function connectMultiplayer(options: {
   });
 
   room.onLeave(() => {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
     options.callbacks?.onStatus?.('offline');
   });
 
@@ -421,6 +436,12 @@ export async function connectMultiplayer(options: {
   });
 
   options.callbacks?.onStatus?.('online');
+
+  const sendPing = () => {
+    room.send('ping', { clientTime: Date.now() });
+  };
+  sendPing();
+  pingTimer = setInterval(sendPing, 4000);
 
   return {
     sessionId: ownSessionId,
@@ -490,6 +511,10 @@ export async function connectMultiplayer(options: {
     },
 
     async leave() {
+      if (pingTimer) {
+        clearInterval(pingTimer);
+        pingTimer = null;
+      }
       await Promise.resolve(room.leave(true));
     },
   };
