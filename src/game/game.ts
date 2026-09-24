@@ -129,6 +129,8 @@ export class Game {
   remotePlayers = new Map<string, RemotePlayerView>();
   multiplayerActive = false;
   multiplayerSessionId = '';
+  networkMovePredictions = new Map<number, { x: number; y: number; dir: 'down' | 'up' | 'left' | 'right' }>();
+  lastNetworkAckSeq = 0;
   pvpAttackHandler: ((targetSessionId: string) => void) | null = null;
   pveBeginHandler: ((spawnId: string) => void) | null = null;
   pveActionHandler: ((payload: {
@@ -296,6 +298,8 @@ export class Game {
     if (!active) {
       this.remotePlayers.clear();
       this.multiplayerSessionId = '';
+      this.networkMovePredictions.clear();
+      this.lastNetworkAckSeq = 0;
       this.pvpHp = 0;
       this.pvpMaxHp = 0;
       this.pvpKnockedOut = false;
@@ -314,14 +318,72 @@ export class Game {
     this.multiplayerSessionId = sessionId;
   }
 
-  reconcileServerPosition(
+  noteNetworkMove(
+    seq: number,
     x: number,
     y: number,
     dir: 'down' | 'up' | 'left' | 'right',
   ) {
+    if (!Number.isFinite(seq) || seq <= 0) return;
+    this.networkMovePredictions.set(seq, { x, y, dir });
+    while (this.networkMovePredictions.size > 64) {
+      const oldest = this.networkMovePredictions.keys().next().value as number | undefined;
+      if (oldest === undefined) break;
+      this.networkMovePredictions.delete(oldest);
+    }
+  }
+
+  reconcileServerPosition(
+    x: number,
+    y: number,
+    dir: 'down' | 'up' | 'left' | 'right',
+    seq = 0,
+  ) {
     if (this.state !== 'world') return;
-    const distance = Math.hypot(x - this.px, y - this.py);
-    if (distance > 8) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (seq > 0 && seq <= this.lastNetworkAckSeq) return;
+
+    const prediction = seq > 0 ? this.networkMovePredictions.get(seq) : undefined;
+    if (seq > 0) {
+      this.lastNetworkAckSeq = seq;
+      for (const key of [...this.networkMovePredictions.keys()]) {
+        if (key <= seq) this.networkMovePredictions.delete(key);
+      }
+    }
+
+    if (prediction) {
+      const correctionX = x - prediction.x;
+      const correctionY = y - prediction.y;
+      const correctionDistance = Math.hypot(correctionX, correctionY);
+
+      // A normal ACK confirms an older predicted position. Snapping to it would
+      // pull the local player backwards by roughly one network round trip.
+      if (correctionDistance <= 0.75) return;
+
+      if (correctionDistance <= 48) {
+        const adjustedX = this.px + correctionX;
+        const adjustedY = this.py + correctionY;
+        if (this.canWalk(adjustedX, adjustedY)) {
+          this.px = adjustedX;
+          this.py = adjustedY;
+          this.player.x = adjustedX;
+          this.player.y = adjustedY;
+          if (correctionDistance > 6) this.pdir = dir;
+          return;
+        }
+      }
+
+      this.px = x;
+      this.py = y;
+      this.player.x = x;
+      this.player.y = y;
+      this.pdir = dir;
+      return;
+    }
+
+    // If the matching prediction was already discarded, only a large divergence
+    // warrants a visible snap.
+    if (Math.hypot(x - this.px, y - this.py) > 48) {
       this.px = x;
       this.py = y;
       this.player.x = x;
@@ -1302,7 +1364,7 @@ export class Game {
       const distance = Math.hypot(dx, dy);
 
       if (distance > 0.25) {
-        const factor = Math.min(1, dt * 12);
+        const factor = Math.min(1, dt * 16);
         remote.x += dx * factor;
         remote.y += dy * factor;
         remote.moving = true;
