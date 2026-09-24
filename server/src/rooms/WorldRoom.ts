@@ -210,6 +210,20 @@ async function applyAuthoritativeReward(
   return (await response.json()) as RewardCharacterSnapshot;
 }
 
+async function validateAccessTokenUser(token: string): Promise<string | null> {
+  const { url, publishableKey } = supabaseConfig();
+  const response = await fetch(`${url}/auth/v1/user`, {
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) return null;
+  const user = (await response.json()) as { id?: string };
+  return typeof user.id === "string" ? user.id : null;
+}
+
 async function loadOwnedCharacter(token: string, characterId: string): Promise<CharacterRecord | null> {
   const { url, publishableKey } = supabaseConfig();
   const query =
@@ -299,6 +313,21 @@ export class WorldRoom extends Room {
   }
 
   messages = {
+    auth_refresh: async (client: Client, payload: { accessToken?: string }) => {
+      const player = this.players.get(client.sessionId);
+      const accessToken = String(payload?.accessToken || "").trim();
+      if (!player || !accessToken) return;
+
+      const userId = await validateAccessTokenUser(accessToken);
+      if (!userId || userId !== player.userId) {
+        client.send("auth_refresh_error", { message: "Token de sessão inválido." });
+        return;
+      }
+
+      player.accessToken = accessToken;
+      client.send("auth_refresh_ok", {});
+    },
+
     move: (client: Client, payload: MovePayload) => {
       const player = this.players.get(client.sessionId);
       if (!player || player.pvpHp <= 0 || player.koUntil > Date.now()) return;
