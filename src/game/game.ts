@@ -1826,11 +1826,14 @@ export class Game {
 
     // online count + quest tracker
     pText(g, `Online: ${this.onlineCount}`, mmX, mmY + mmH + 8, 7, '#88f0a0');
-    const q = QUESTS[this.player.questIdx];
+    const q = QUESTS[this.player.questIdx] || QUESTS[0];
     if (q) {
-      const lines = wrapText(g, `${q.title}: ${q.desc}`, 210, 6);
+      const progress = q.target
+        ? ` [${this.player.questProgress}/${q.count || 1}]`
+        : '';
+      const lines = wrapText(g, `${q.title}${progress}: ${q.desc}`, 210, 6);
       panel(g, mmX - 224, mmY - 4, 220, 14 + lines.length * 10, '#585878');
-      pText(g, 'MISSAO', mmX - 216, mmY + 2, 7, '#f8d030');
+      pText(g, `SAGA ${this.player.sagaCycle} · MISSAO`, mmX - 216, mmY + 2, 7, '#f8d030');
       lines.forEach((l, i) => pText(g, l, mmX - 216, mmY + 14 + i * 10, 6, '#e8e8f0'));
     }
 
@@ -1919,6 +1922,7 @@ export class Game {
         `Ki: ${Math.floor(p.ki)}/${this.maxKi()}`,
         `ATK: ${this.pAtk()}  DEF: ${this.pDef()}`,
         `Nivel de Poder: ${this.powerLevel().toLocaleString('pt-BR')}`,
+        `Saga: ${p.sagaCycle}`,
         `Esferas: ${p.balls.length}/7`,
         `Grupo: ${['voce', ...this.companions().map((c) => c.name)].join(', ')}`,
       ];
