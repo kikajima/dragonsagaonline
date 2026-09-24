@@ -113,6 +113,12 @@ export class Game {
   multiplayerSessionId = '';
   pvpAttackHandler: ((targetSessionId: string) => void) | null = null;
   pveBeginHandler: ((spawnId: string) => void) | null = null;
+  pveActionHandler: ((payload: {
+    battleId: string;
+    action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform';
+    skillId?: string;
+    itemId?: string;
+  }) => void) | null = null;
   pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
   activePveBattleId = '';
   activePveSpawnId = '';
@@ -269,6 +275,7 @@ export class Game {
       this.activePveBattleId = '';
       this.activePveSpawnId = '';
       this.pendingPveSpawnId = '';
+      this.pveActionHandler = null;
     }
   }
 
@@ -282,9 +289,16 @@ export class Game {
 
   setPveHandlers(
     begin: ((spawnId: string) => void) | null,
+    action: ((payload: {
+      battleId: string;
+      action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform';
+      skillId?: string;
+      itemId?: string;
+    }) => void) | null,
     complete: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null,
   ) {
     this.pveBeginHandler = begin;
+    this.pveActionHandler = action;
     this.pveCompleteHandler = complete;
   }
 
@@ -346,6 +360,25 @@ export class Game {
     this.startBattle([event.enemyId], event.isBoss);
   }
 
+  receivePveState(event: {
+    battleId: string;
+    playerHp: number;
+    playerKi: number;
+    enemyHp: number;
+    enemyMaxHp: number;
+    outcome: 'active' | 'win' | 'lose' | 'fled';
+  }) {
+    if (
+      !this.battle ||
+      !event?.battleId ||
+      event.battleId !== this.activePveBattleId
+    ) {
+      return;
+    }
+
+    this.battle.syncAuthoritativeState(event);
+  }
+
   receivePveResult(event: {
     outcome: 'win' | 'fled' | 'lose';
     battleId: string;
@@ -376,9 +409,11 @@ export class Game {
 
     if (event.outcome === 'win' && event.character) {
       const state = event.character.state as Partial<PlayerState>;
+      const localItems = { ...this.player.items };
       this.player = {
         ...this.player,
         ...state,
+        items: localItems,
         lv: Math.max(1, Math.floor(event.character.level)),
         exp: Math.max(0, Number(event.character.xp)),
         zeni: Math.max(0, Number(event.character.gold)),
@@ -394,6 +429,7 @@ export class Game {
       });
 
       if (event.drop) {
+        this.player.items[event.drop] = (this.player.items[event.drop] || 0) + 1;
         this.addChat({
           name: 'Sistema',
           text: `Item obtido: ${ITEMS[event.drop]?.name || event.drop}`,
@@ -606,6 +642,20 @@ export class Game {
     const defs = enemyIds.map((id) => ENEMIES[id]).filter(Boolean);
     this.battle = new Battle(party, defs, isBoss);
     this.battle.inventory = new Map(Object.entries(this.player.items));
+    if (
+      this.multiplayerActive &&
+      this.activePveBattleId &&
+      this.pveActionHandler
+    ) {
+      this.battle.onCommand = (event) => {
+        this.pveActionHandler?.({
+          battleId: this.activePveBattleId,
+          action: event.action,
+          skillId: event.skillId,
+          itemId: event.itemId,
+        });
+      };
+    }
     this.battle.onEnd = (r) => this.endBattle(r);
     this.state = 'battle';
     this.dialog = null;
