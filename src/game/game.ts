@@ -762,7 +762,6 @@ export class Game {
 
     this.pendingPveRewards.add(event.battleId);
     if (this.activePveBattleId === event.battleId) {
-      this.activePveBattleId = '';
       this.activePveSpawnId = '';
     }
     this.pendingPveSpawnId = '';
@@ -1150,6 +1149,7 @@ export class Game {
       this.activePveBattleId &&
       this.pveActionHandler
     ) {
+      this.battle.authoritative = true;
       this.battle.onCommand = (event) => {
         this.pveActionHandler?.({
           battleId: this.activePveBattleId,
@@ -1174,17 +1174,33 @@ export class Game {
     this.player.ki = Math.max(0, Math.floor(pf.ki));
 
     if (this.multiplayerActive && this.activePveBattleId && this.pveCompleteHandler) {
+      const battleId = this.activePveBattleId;
       this.player.items = Object.fromEntries(this.battle.inventory || []);
+
+      if (r.win && this.pendingPveRewards.has(battleId)) {
+        // Victory was already finalized by the authoritative server.
+        // Do not send a second pve_complete(win), which can race with cleanup.
+        this.activePveBattleId = '';
+        this.activePveSpawnId = '';
+        this.battle = null;
+        this.state = 'world';
+        this.battleCooldown = 0.35;
+        chip.playSong(this.nearTown() ? 'town' : 'field');
+        return;
+      }
+
       const outcome: 'win' | 'fled' | 'lose' = r.win ? 'win' : r.fled ? 'fled' : 'lose';
       this.pveCompleteHandler({
-        battleId: this.activePveBattleId,
+        battleId,
         outcome,
         hp: this.player.hp,
         ki: this.player.ki,
       });
+      this.activePveBattleId = '';
+      this.activePveSpawnId = '';
       this.battle = null;
       this.state = 'world';
-      this.battleCooldown = 1.5;
+      this.battleCooldown = 0.6;
       chip.playSong(this.nearTown() ? 'town' : 'field');
       return;
     }
