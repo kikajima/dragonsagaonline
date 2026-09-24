@@ -462,6 +462,15 @@ export default function Home() {
           if (cancelled) return;
           game.receivePveError(event.message || 'Batalha indisponível.');
         },
+        onPveVictoryConfirmed(event) {
+          if (!cancelled) game.receivePveVictoryConfirmed(event);
+        },
+        onPveRewardError(event) {
+          if (!cancelled) game.receivePveRewardError(event);
+        },
+        onWorldActionPending(event) {
+          if (!cancelled) game.receiveWorldActionPending(event.message);
+        },
         onWorldActionResult(event) {
           if (!cancelled) game.receiveWorldActionResult(event);
         },
