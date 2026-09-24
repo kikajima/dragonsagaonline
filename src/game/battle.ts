@@ -41,6 +41,20 @@ export type BattleMsg = { text: string; t: number };
 
 export type BattleResult = { win: boolean; fled: boolean; exp: number; zeni: number; drops: string[] } | null;
 
+export interface BattleCommandEvent {
+  action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform';
+  skillId?: string;
+  itemId?: string;
+}
+
+export interface AuthoritativeBattleState {
+  playerHp: number;
+  playerKi: number;
+  enemyHp: number;
+  enemyMaxHp: number;
+  outcome: 'active' | 'win' | 'lose' | 'fled';
+}
+
 export class Battle {
   party: Fighter[] = [];
   enemies: Fighter[] = [];
@@ -61,6 +75,7 @@ export class Battle {
   t = 0;
   menuTimer = 0;
   onEnd: ((r: BattleResult) => void) | null = null;
+  onCommand: ((event: BattleCommandEvent) => void) | null = null;
   goldFlash = 0;
   popups: { x: number; y: number; text: string; t: number; color: string }[] = [];
 
@@ -136,6 +151,7 @@ export class Battle {
   playerCommand(action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform', skillId?: string, itemId?: string, target?: Fighter) {
     const actor = this.turnOrder[this.currentIdx];
     if (!actor) return;
+    this.onCommand?.({ action, skillId, itemId });
     this.queue.push({ actor, action, skillId, itemId, target });
     this.phase = 'anim';
     this.resolveNext();
@@ -788,6 +804,39 @@ export class Battle {
       }
     }
     return false;
+  }
+
+  syncAuthoritativeState(state: AuthoritativeBattleState) {
+    const player = this.party[0];
+    const enemy = this.enemies[0];
+
+    if (player) {
+      player.hp = Math.max(0, Math.min(player.maxHp, Math.floor(state.playerHp)));
+      player.ki = Math.max(0, Math.min(player.maxKi, Math.floor(state.playerKi)));
+      player.alive = player.hp > 0;
+    }
+
+    if (enemy) {
+      enemy.maxHp = Math.max(1, Math.floor(state.enemyMaxHp));
+      enemy.hp = Math.max(0, Math.min(enemy.maxHp, Math.floor(state.enemyHp)));
+      enemy.alive = enemy.hp > 0;
+    }
+
+    if (state.outcome === 'win') {
+      this.enemies.forEach((fighter) => {
+        fighter.hp = 0;
+        fighter.alive = false;
+      });
+    } else if (state.outcome === 'lose') {
+      this.party.forEach((fighter) => {
+        fighter.hp = 0;
+        fighter.alive = false;
+      });
+    } else if (state.outcome === 'fled') {
+      this.result = { win: false, fled: true, exp: 0, zeni: 0, drops: [] };
+      this.phase = 'end';
+      this.menuTimer = 0.15;
+    }
   }
 
   lowestHpAlly(): Fighter {
