@@ -226,6 +226,12 @@ function solidAt(x: number, y: number): boolean {
   return SOLID.has(WORLD_TILES[ty * MAP_W + tx]!);
 }
 
+export function isPvpSafeZone(x: number, y: number): boolean {
+  const tx = x / TILE_SIZE;
+  const ty = y / TILE_SIZE;
+  return tx >= 10 && tx <= 38 && ty >= 22 && ty <= 48;
+}
+
 export function canWalk(x: number, y: number): boolean {
   const r = 5;
   return (
