@@ -54,6 +54,10 @@ export interface MultiplayerPveBegin {
   spawnId: string;
   enemyId: string;
   isBoss: boolean;
+  playerHp: number;
+  playerKi: number;
+  enemyHp: number;
+  enemyMaxHp: number;
 }
 
 export interface MultiplayerPveCharacter {
