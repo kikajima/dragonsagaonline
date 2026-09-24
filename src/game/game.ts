@@ -139,6 +139,8 @@ export class Game {
   onChatInput: ((show: boolean) => void) | null = null;
   toast: { text: string; t: number } | null = null;
   touchDirs = new Set<string>();
+  touchMoveX = 0;
+  touchMoveY = 0;
   trail: [number, number][] = [];
   miniCanvas: HTMLCanvasElement | null = null;
 
@@ -508,16 +510,32 @@ export class Game {
   updateWorld(dt: number) {
     const speed = 72;
     let dx = 0, dy = 0;
-    const k = (d: string) => this.keys.has(d) || this.touchDirs.has(d);
-    if (k('ArrowLeft') || k('a')) { dx = -1; this.pdir = 'left'; }
-    else if (k('ArrowRight') || k('d')) { dx = 1; this.pdir = 'right'; }
-    if (k('ArrowUp') || k('w')) { dy = -1; if (!dx) this.pdir = 'up'; }
-    else if (k('ArrowDown') || k('s')) { dy = 1; if (!dx) this.pdir = 'down'; }
-    this.pmoving = dx !== 0 || dy !== 0;
+    const analogMagnitude = Math.hypot(this.touchMoveX, this.touchMoveY);
+    const usingTouchStick = analogMagnitude > 0.08;
+
+    if (usingTouchStick) {
+      dx = this.touchMoveX;
+      dy = this.touchMoveY;
+
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        this.pdir = dx < 0 ? 'left' : 'right';
+      } else {
+        this.pdir = dy < 0 ? 'up' : 'down';
+      }
+    } else {
+      const k = (d: string) => this.keys.has(d) || this.touchDirs.has(d);
+      if (k('ArrowLeft') || k('a')) { dx = -1; this.pdir = 'left'; }
+      else if (k('ArrowRight') || k('d')) { dx = 1; this.pdir = 'right'; }
+      if (k('ArrowUp') || k('w')) { dy = -1; if (!dx) this.pdir = 'up'; }
+      else if (k('ArrowDown') || k('s')) { dy = 1; if (!dx) this.pdir = 'down'; }
+    }
+
+    this.pmoving = Math.hypot(dx, dy) > 0.08;
     if (this.pmoving) {
       const n = Math.hypot(dx, dy) || 1;
-      const nx = this.px + (dx / n) * speed * dt;
-      const ny = this.py + (dy / n) * speed * dt;
+      const strength = usingTouchStick ? Math.min(1, n) : 1;
+      const nx = this.px + (dx / n) * speed * strength * dt;
+      const ny = this.py + (dy / n) * speed * strength * dt;
       if (this.canWalk(nx, this.py)) this.px = nx;
       if (this.canWalk(this.px, ny)) this.py = ny;
       this.stepT += dt;
@@ -1193,28 +1211,6 @@ export class Game {
     // controls hint
     pText(g, 'WASD/setas: mover  Z: falar/confirmar  X: menu', 12, VH - 34, 6, 'rgba(232,232,240,0.75)');
 
-    // touch controls (mobile)
-    this.renderTouch(g);
-  }
-
-  renderTouch(g: CanvasRenderingContext2D) {
-    if (!('ontouchstart' in window)) return;
-    const dpadX = 30, dpadY = VH - 150;
-    g.globalAlpha = 0.5;
-    const btn = (x: number, y: number, label: string, active: boolean) => {
-      g.fillStyle = active ? '#f8d030' : '#283868';
-      g.fillRect(x, y, 44, 44);
-      g.strokeStyle = '#e8e0c8';
-      g.strokeRect(x, y, 44, 44);
-      pTextC(g, label, x + 22, y + 16, 10, active ? '#101828' : '#fff');
-    };
-    btn(dpadX + 46, dpadY, '^', this.touchDirs.has('ArrowUp'));
-    btn(dpadX, dpadY + 46, '<', this.touchDirs.has('ArrowLeft'));
-    btn(dpadX + 92, dpadY + 46, '>', this.touchDirs.has('ArrowRight'));
-    btn(dpadX + 46, dpadY + 92, 'v', this.touchDirs.has('ArrowDown'));
-    btn(VW - 120, VH - 120, 'A', false);
-    btn(VW - 70, VH - 90, 'B', false);
-    g.globalAlpha = 1;
   }
 
   renderDialog(g: CanvasRenderingContext2D) {
@@ -1476,15 +1472,27 @@ export class Game {
     this.nameInputCb?.(false, '');
     chip.sfx('confirm');
   }
-  touchStart(x: number, y: number) {
-    if (!('ontouchstart' in window)) return;
-    const dpadX = 30, dpadY = VH - 150;
-    const inBtn = (bx: number, by: number) => x >= bx && x <= bx + 44 && y >= by && y <= by + 44;
-    if (inBtn(dpadX + 46, dpadY)) this.touchDirs.add('ArrowUp');
-    else if (inBtn(dpadX, dpadY + 46)) this.touchDirs.add('ArrowLeft');
-    else if (inBtn(dpadX + 92, dpadY + 46)) this.touchDirs.add('ArrowRight');
-    else if (inBtn(dpadX + 46, dpadY + 92)) this.touchDirs.add('ArrowDown');
-    else if (inBtn(VW - 120, VH - 120) || inBtn(VW - 70, VH - 90)) this.keydown(new KeyboardEvent('keydown', { key: 'z' }));
+  setTouchVector(x: number, y: number) {
+    const magnitude = Math.hypot(x, y);
+    if (magnitude <= 0.08) {
+      this.touchMoveX = 0;
+      this.touchMoveY = 0;
+      return;
+    }
+
+    const scale = magnitude > 1 ? 1 / magnitude : 1;
+    this.touchMoveX = x * scale;
+    this.touchMoveY = y * scale;
   }
-  touchEnd() { this.touchDirs.clear(); }
+
+  clearTouchVector() {
+    this.touchMoveX = 0;
+    this.touchMoveY = 0;
+    this.touchDirs.clear();
+  }
+
+  touchKey(key: string) {
+    chip.resume();
+    return this.keydown(new KeyboardEvent('keydown', { key }));
+  }
 }
