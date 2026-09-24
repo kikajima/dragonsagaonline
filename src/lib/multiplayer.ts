@@ -113,6 +113,40 @@ export interface MultiplayerWorldActionError {
   message: string;
 }
 
+export interface MultiplayerTradeOffer {
+  itemId: string;
+  quantity: number;
+}
+
+export interface MultiplayerTradeOpen {
+  tradeId: string;
+  otherSessionId: string;
+  otherName: string;
+}
+
+export interface MultiplayerTradeState {
+  tradeId: string;
+  selfOffer: MultiplayerTradeOffer | null;
+  otherOffer: MultiplayerTradeOffer | null;
+  selfAccepted: boolean;
+  otherAccepted: boolean;
+}
+
+export interface MultiplayerTradeComplete {
+  tradeId: string;
+  otherName: string;
+  character: MultiplayerWorldActionCharacter;
+}
+
+export interface MultiplayerTradeCancelled {
+  tradeId: string;
+  message: string;
+}
+
+export interface MultiplayerTradeError {
+  message: string;
+}
+
 export interface MultiplayerPveState {
   battleId: string;
   playerHp: number;
@@ -165,6 +199,11 @@ export interface MultiplayerCallbacks {
   onPveError?: (event: MultiplayerPveError) => void;
   onWorldActionResult?: (event: MultiplayerWorldActionResult) => void;
   onWorldActionError?: (event: MultiplayerWorldActionError) => void;
+  onTradeOpen?: (event: MultiplayerTradeOpen) => void;
+  onTradeState?: (event: MultiplayerTradeState) => void;
+  onTradeComplete?: (event: MultiplayerTradeComplete) => void;
+  onTradeCancelled?: (event: MultiplayerTradeCancelled) => void;
+  onTradeError?: (event: MultiplayerTradeError) => void;
 }
 
 export interface MultiplayerConnection {
@@ -195,6 +234,10 @@ export interface MultiplayerConnection {
     action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal',
     arg?: string,
   ): void;
+  sendTradeRequest(targetSessionId: string): void;
+  sendTradeOffer(tradeId: string, itemId: string, quantity: number): void;
+  sendTradeAccept(tradeId: string): void;
+  sendTradeCancel(tradeId: string): void;
   leave(): Promise<void>;
 }
 
@@ -341,6 +384,31 @@ export async function connectMultiplayer(options: {
     options.callbacks?.onWorldActionError?.(event);
   });
 
+  room.onMessage('trade_open', (event: MultiplayerTradeOpen) => {
+    if (!event) return;
+    options.callbacks?.onTradeOpen?.(event);
+  });
+
+  room.onMessage('trade_state', (event: MultiplayerTradeState) => {
+    if (!event) return;
+    options.callbacks?.onTradeState?.(event);
+  });
+
+  room.onMessage('trade_complete', (event: MultiplayerTradeComplete) => {
+    if (!event) return;
+    options.callbacks?.onTradeComplete?.(event);
+  });
+
+  room.onMessage('trade_cancelled', (event: MultiplayerTradeCancelled) => {
+    if (!event) return;
+    options.callbacks?.onTradeCancelled?.(event);
+  });
+
+  room.onMessage('trade_error', (event: MultiplayerTradeError) => {
+    if (!event) return;
+    options.callbacks?.onTradeError?.(event);
+  });
+
   room.onLeave(() => {
     options.callbacks?.onStatus?.('offline');
   });
@@ -398,6 +466,27 @@ export async function connectMultiplayer(options: {
 
     sendWorldAction(action, arg = '') {
       room.send('world_action', { action, arg });
+    },
+
+    sendTradeRequest(targetSessionId) {
+      const target = targetSessionId.trim();
+      if (!target || target === ownSessionId) return;
+      room.send('trade_request', { targetSessionId: target });
+    },
+
+    sendTradeOffer(tradeId, itemId, quantity) {
+      if (!tradeId || !itemId || !Number.isFinite(quantity) || quantity < 1) return;
+      room.send('trade_offer', { tradeId, itemId, quantity: Math.floor(quantity) });
+    },
+
+    sendTradeAccept(tradeId) {
+      if (!tradeId) return;
+      room.send('trade_accept', { tradeId });
+    },
+
+    sendTradeCancel(tradeId) {
+      if (!tradeId) return;
+      room.send('trade_cancel', { tradeId });
     },
 
     async leave() {
