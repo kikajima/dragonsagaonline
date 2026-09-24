@@ -54,6 +54,17 @@ export interface MultiplayerPveBegin {
   isBoss: boolean;
 }
 
+export interface MultiplayerPveCharacter {
+  id: string;
+  level: number;
+  xp: number;
+  gold: number;
+  hp: number;
+  ki: number;
+  state: Record<string, unknown>;
+  quest_completed?: boolean;
+}
+
 export interface MultiplayerPveResult {
   outcome: 'win' | 'fled' | 'lose';
   battleId: string;
@@ -64,6 +75,7 @@ export interface MultiplayerPveResult {
   drop?: string | null;
   hp?: number;
   ki?: number;
+  character?: MultiplayerPveCharacter;
 }
 
 export interface MultiplayerPveError {
