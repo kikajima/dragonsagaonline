@@ -393,6 +393,9 @@ export default function Home() {
         onPveResult(event) {
           if (!cancelled) game.receivePveResult(event);
         },
+        onPveState(event) {
+          if (!cancelled) game.receivePveState(event);
+        },
         onPveError(event) {
           if (cancelled) return;
           game.pendingPveSpawnId = '';
@@ -414,6 +417,7 @@ export default function Home() {
         });
         game.setPveHandlers(
           (spawnId) => multiplayerRef.current?.sendPveBegin(spawnId),
+          (payload) => multiplayerRef.current?.sendPveAction(payload),
           (payload) => multiplayerRef.current?.sendPveComplete(payload),
         );
         setMultiplayerStatus('online');
@@ -475,7 +479,7 @@ export default function Home() {
       const connection = multiplayerRef.current;
       multiplayerRef.current = null;
       game.setPvpAttackHandler(null);
-      game.setPveHandlers(null, null);
+      game.setPveHandlers(null, null, null);
       game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
