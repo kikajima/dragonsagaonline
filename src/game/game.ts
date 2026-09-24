@@ -121,7 +121,7 @@ export class Game {
     itemId?: string;
   }) => void) | null = null;
   pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
-  worldActionHandler: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest', arg?: string) => void) | null = null;
+  worldActionHandler: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal', arg?: string) => void) | null = null;
   pendingWorldActions = new Set<string>();
   activePveBattleId = '';
   activePveSpawnId = '';
@@ -324,7 +324,7 @@ export class Game {
   }
 
   setWorldActionHandler(
-    cb: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest', arg?: string) => void) | null,
+    cb: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal', arg?: string) => void) | null,
   ) {
     this.worldActionHandler = cb;
   }
@@ -351,7 +351,7 @@ export class Game {
   }
 
   receiveWorldActionResult(event: {
-    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest';
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal';
     arg: string;
     character: {
       level: number;
@@ -410,6 +410,9 @@ export class Game {
       });
       this.state = 'world';
       chip.playSong('field');
+    } else if (event.action === 'fountain_heal') {
+      chip.sfx('heal');
+      this.showDialog([{ who: 'Fonte', text: 'Água cristalina! HP e Ki totalmente restaurados!' }]);
     }
 
     if ((this.player.sagaCycle || 0) > previousCycle) {
@@ -431,7 +434,7 @@ export class Game {
   }
 
   private requestWorldAction(
-    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest',
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal',
     arg = '',
   ): boolean {
     if (!this.multiplayerActive || !this.worldActionHandler) return false;
@@ -544,6 +547,8 @@ export class Game {
     drop?: string | null;
     hp?: number;
     ki?: number;
+    x?: number;
+    y?: number;
     character?: {
       id: string;
       level: number;
@@ -625,15 +630,26 @@ export class Game {
       return;
     }
 
-    if (typeof event.hp === 'number') this.player.hp = Math.max(1, Math.floor(event.hp));
-    if (typeof event.ki === 'number') this.player.ki = Math.max(0, Math.floor(event.ki));
+    if (event.character) this.applyAuthoritativeCharacter(event.character);
+    else {
+      if (typeof event.hp === 'number') this.player.hp = Math.max(1, Math.floor(event.hp));
+      if (typeof event.ki === 'number') this.player.ki = Math.max(0, Math.floor(event.ki));
+    }
+
+    if (typeof event.x === 'number' && typeof event.y === 'number') {
+      this.px = event.x;
+      this.py = event.y;
+      this.player.x = event.x;
+      this.player.y = event.y;
+    }
 
     if (event.outcome === 'lose') {
-      this.player.hp = Math.floor(this.maxHp() / 2);
-      this.player.ki = Math.floor(this.maxKi() / 2);
-      this.player.zeni = Math.floor(this.player.zeni / 2);
-      this.px = 19.5 * T16;
-      this.py = 43.5 * T16;
+      this.addChat({
+        name: 'Sistema',
+        text: 'Você acordou na cidade. Metade do zeni foi perdido...',
+        color: '#f08888',
+        sys: true,
+      });
     }
 
     this.save();
@@ -694,10 +710,29 @@ export class Game {
     }
   }
 
-  receivePvpRespawn(player: RemotePlayerNetworkState) {
+  receivePvpRespawn(player: RemotePlayerNetworkState & {
+    character?: {
+      level: number;
+      xp: number;
+      gold: number;
+      hp: number;
+      ki: number;
+      x?: number;
+      y?: number;
+      state: Record<string, unknown>;
+    };
+  }) {
     if (player.sessionId === this.multiplayerSessionId) {
       this.setPvpState(player.pvpHp, player.pvpMaxHp, false);
-      this.toast = { text: 'Você se recuperou do PvP!', t: 1.5 };
+      if (player.character) {
+        this.applyAuthoritativeCharacter(player.character);
+      }
+      this.px = player.x;
+      this.py = player.y;
+      this.player.x = player.x;
+      this.player.y = player.y;
+      this.toast = { text: 'Você se recuperou na cidade!', t: 1.8 };
+      this.save();
       return;
     }
 
@@ -1303,6 +1338,7 @@ export class Game {
     }
     // fountain heal
     if (tileAt(this.world, ftx, fty) === T.FOUNTAIN || tileAt(this.world, ftx, fty) === T.SPRING) {
+      if (this.requestWorldAction('fountain_heal')) return;
       this.player.hp = this.maxHp();
       this.player.ki = this.maxKi();
       chip.sfx('heal');
