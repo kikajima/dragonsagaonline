@@ -354,8 +354,6 @@ export async function updateCharacter(
   payload: Partial<CharacterPayload>,
 ): Promise<CharacterRow> {
   const safePayload = {
-    ...(typeof payload.hp === 'number' ? { hp: payload.hp } : {}),
-    ...(typeof payload.ki === 'number' ? { ki: payload.ki } : {}),
     ...(typeof payload.map_id === 'string' ? { map_id: payload.map_id } : {}),
     ...(typeof payload.x === 'number' ? { x: payload.x } : {}),
     ...(typeof payload.y === 'number' ? { y: payload.y } : {}),
