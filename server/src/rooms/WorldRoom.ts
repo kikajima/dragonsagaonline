@@ -501,7 +501,9 @@ export class WorldRoom extends Room {
           return client.send("world_action_error", { action, message: "Fale com o Mestre Kame de perto." });
         }
       } else if (action === "collect_ball") {
-        const [tx, ty] = arg.split(",").map(Number);
+        const parts = arg.split(",");
+        const tx = Number(parts[0]);
+        const ty = Number(parts[1]);
         if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
         if (Math.hypot(player.x - (tx * 16 + 8), player.y - (ty * 16 + 8)) > 34) {
           return client.send("world_action_error", { action, message: "Chegue mais perto da Esfera do Dragão." });
