@@ -5,6 +5,7 @@ import {
   canWalk,
   computeCharacterStats,
   expForLevel,
+  isPvpSafeZone,
   minimumBattleDurationMs,
   type Direction,
 } from "../worldRules.js";
@@ -46,6 +47,7 @@ interface OnlinePlayer {
   pvpHp: number;
   pvpMaxHp: number;
   koUntil: number;
+  pvpProtectedUntil: number;
   lastMoveAt: number;
   lastPvpAttackAt: number;
 }
@@ -450,7 +452,18 @@ export class WorldRoom extends Room {
       const target = this.players.get(String(payload?.targetSessionId || "").trim());
       if (!attacker || !target || target.sessionId === attacker.sessionId) return;
       const now = Date.now();
-      if (attacker.pvpHp <= 0 || attacker.koUntil > now || target.pvpHp <= 0 || target.koUntil > now) return;
+      const fail = (message: string) => client.send("pvp_error", { message });
+      if (attacker.pvpHp <= 0 || attacker.koUntil > now) return fail("Você está se recuperando do PvP.");
+      if (target.pvpHp <= 0 || target.koUntil > now) return fail("Esse jogador já foi derrotado.");
+      if (attacker.pvpProtectedUntil > now || target.pvpProtectedUntil > now) {
+        return fail("Proteção PvP temporária ativa.");
+      }
+      if (isPvpSafeZone(attacker.x, attacker.y) || isPvpSafeZone(target.x, target.y)) {
+        return fail("PvP não é permitido dentro da cidade.");
+      }
+      if (this.encounters.has(attacker.sessionId) || this.encounters.has(target.sessionId)) {
+        return fail("PvP indisponível durante uma batalha PvE.");
+      }
       if (now - attacker.lastPvpAttackAt < PVP_ATTACK_COOLDOWN_MS) return;
       if (Math.hypot(target.x - attacker.x, target.y - attacker.y) > PVP_RANGE || !isFacing(attacker, target)) return;
       attacker.lastPvpAttackAt = now;
@@ -479,6 +492,7 @@ export class WorldRoom extends Room {
         if (!current || current !== target) return;
         current.pvpHp = current.pvpMaxHp;
         current.koUntil = 0;
+        current.pvpProtectedUntil = Date.now() + 5000;
         this.broadcast("pvp_respawn", publicPlayer(current));
       }, PVP_RESPAWN_MS);
     },
@@ -511,6 +525,7 @@ export class WorldRoom extends Room {
       pvpHp: stats.maxHp,
       pvpMaxHp: stats.maxHp,
       koUntil: 0,
+      pvpProtectedUntil: Date.now() + 8000,
       lastMoveAt: Date.now(),
       lastPvpAttackAt: 0,
     };
