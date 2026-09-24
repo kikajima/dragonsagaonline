@@ -460,8 +460,7 @@ export default function Home() {
         },
         onPveError(event) {
           if (cancelled) return;
-          game.pendingPveSpawnId = '';
-          game.toast = { text: event.message || 'Batalha indisponível.', t: 1.4 };
+          game.receivePveError(event.message || 'Batalha indisponível.');
         },
         onWorldActionResult(event) {
           if (!cancelled) game.receiveWorldActionResult(event);
