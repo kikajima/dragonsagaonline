@@ -41,8 +41,33 @@ export interface PlayerState {
   balls: string[]; // spot keys collected "x,y"
   questIdx: number;
   questProgress: number;
+  sagaCycle: number;
   flags: Record<string, boolean>;
   x: number; y: number;
+}
+
+export interface AuthoritativeCharacterSnapshot {
+  id: string;
+  level: number;
+  xp: number;
+  gold: number;
+  hp: number;
+  ki: number;
+  base_atk: number;
+  base_def: number;
+  items: Record<string, number>;
+  gear_owned: string[];
+  dragon_balls: string[];
+  flags: Record<string, boolean>;
+  quest_index: number;
+  quest_progress: number;
+  saga_cycle: number;
+  quest_completed?: boolean;
+  saga_completed?: boolean;
+  action?: string;
+  item_id?: string;
+  ball_key?: string;
+  wish?: string;
 }
 
 interface Npc {
@@ -120,6 +145,10 @@ export class Game {
     itemId?: string;
   }) => void) | null = null;
   pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
+  shopPurchaseHandler: ((itemId: string) => void) | null = null;
+  useItemHandler: ((itemId: string) => void) | null = null;
+  questInteractHandler: (() => void) | null = null;
+  dragonWishHandler: ((wish: 'power' | 'defense' | 'zeni') => void) | null = null;
   activePveBattleId = '';
   activePveSpawnId = '';
   pendingPveSpawnId = '';
@@ -183,7 +212,7 @@ export class Game {
     return {
       name: 'Guerreiro', classId: 'saiya', lv: 1, exp: 0, hp: 120, ki: 40, zeni: 300,
       baseAtk: 0, baseDef: 0, items: { sensu: 3, capsula: 2 }, gearOwned: [], balls: [],
-      questIdx: 0, questProgress: 0, flags: {}, x: 0, y: 0,
+      questIdx: 0, questProgress: 0, sagaCycle: 1, flags: {}, x: 0, y: 0,
     };
   }
 
