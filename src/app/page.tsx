@@ -354,6 +354,11 @@ export default function Home() {
         onPlayerMoved(player) {
           if (!cancelled) game.upsertRemotePlayer(player);
         },
+        onMoveAck(event) {
+          if (!cancelled) {
+            game.reconcileServerPosition(event.x, event.y, event.dir);
+          }
+        },
         onPlayerLeft(sessionId) {
           if (!cancelled) game.removeRemotePlayer(sessionId);
         },
@@ -423,7 +428,8 @@ export default function Home() {
         setMultiplayerStatus('online');
         setMultiplayerMessage('');
 
-        connection.sendMove(game.px, game.py, game.pdir);
+        sequence += 1;
+        connection.sendMove(game.px, game.py, game.pdir, sequence);
         lastSent = { x: game.px, y: game.py, dir: game.pdir, at: Date.now() };
 
         authRefreshTimer = setInterval(() => {
@@ -455,6 +461,7 @@ export default function Home() {
             activeGame.px,
             activeGame.py,
             activeGame.pdir,
+            sequence,
           );
           lastSent = { x: activeGame.px, y: activeGame.py, dir: activeGame.pdir, at: now };
         }, 100);
