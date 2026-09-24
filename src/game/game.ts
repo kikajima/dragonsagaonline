@@ -752,6 +752,11 @@ export class Game {
     battleId: string;
     spawnId: string;
     enemyId: string;
+    previousQuestIdx: number;
+    questIdx: number;
+    questProgress: number;
+    sagaCycle: number;
+    questCompleted: boolean;
   }) {
     if (!event?.battleId) return;
 
@@ -769,7 +774,31 @@ export class Game {
     }
     if (this.activeBoss?.spawnId === event.spawnId) this.activeBoss = null;
 
-    this.toast = { text: 'VITÓRIA CONFIRMADA!', t: 1.2 };
+    const previousQuestIdx = this.player.questIdx;
+    this.player.questIdx = Math.max(0, Math.floor(event.questIdx));
+    this.player.questProgress = Math.max(0, Math.floor(event.questProgress));
+    this.player.sagaCycle = Math.max(0, Math.floor(event.sagaCycle));
+
+    if (event.questCompleted) {
+      if (event.previousQuestIdx === 5 && event.questIdx === 0) {
+        this.toast = { text: `SAGA ${event.sagaCycle + 1} INICIADA!`, t: 3.5 };
+        this.addChat({
+          name: 'Saga',
+          text: 'A sequência foi concluída e um novo ciclo foi liberado.',
+          color: '#f8d030',
+          sys: true,
+        });
+      } else {
+        this.toast = { text: 'MISSÃO COMPLETA! Sincronizando recompensa...', t: 2.5 };
+      }
+    } else {
+      const q = QUESTS[this.player.questIdx];
+      if (q?.target === event.enemyId || previousQuestIdx === event.previousQuestIdx) {
+        this.toast = { text: `MISSÃO: ${event.questProgress}/${q?.count || '?'}`, t: 1.6 };
+      } else {
+        this.toast = { text: 'VITÓRIA CONFIRMADA!', t: 1.2 };
+      }
+    }
   }
 
   receivePveRewardError(event: { battleId: string; message: string }) {
@@ -1476,11 +1505,7 @@ export class Game {
           s.spawnId &&
           Math.hypot(s.x - this.px, s.y - this.py) < 20
         ) {
-          const q = QUESTS[this.player.questIdx];
-          if (s.isBoss && (!q || q.target !== s.enemyId)) {
-            this.toast = { text: 'Esse poder é enorme... prepare-se primeiro!', t: 2.5 };
-            this.battleCooldown = 2;
-          } else if (this.pveBeginHandler) {
+          if (this.pveBeginHandler) {
             this.pendingPveSpawnId = s.spawnId;
             this.battleCooldown = 1;
             this.clearTouchVector();
