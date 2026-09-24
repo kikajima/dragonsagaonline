@@ -5,12 +5,36 @@ export interface MultiplayerPlayer {
   x: number;
   y: number;
   dir: 'down' | 'up' | 'left' | 'right';
+  pvpHp: number;
+  pvpMaxHp: number;
+  pvpKo: boolean;
 }
 
 export interface MultiplayerChat {
   sessionId: string;
   name: string;
   text: string;
+}
+
+export interface MultiplayerPvpHit {
+  attackerSessionId: string;
+  targetSessionId: string;
+  attackerName: string;
+  targetName: string;
+  damage: number;
+  hp: number;
+  maxHp: number;
+}
+
+export interface MultiplayerPvpKo {
+  attackerSessionId: string;
+  targetSessionId: string;
+  attackerName: string;
+  targetName: string;
+}
+
+export interface MultiplayerPvpError {
+  message: string;
 }
 
 export type MultiplayerStatus =
@@ -101,6 +125,11 @@ export interface MultiplayerCallbacks {
   onPlayerLeft?: (sessionId: string) => void;
   onChat?: (message: MultiplayerChat) => void;
   onPresence?: (count: number) => void;
+  onPvpState?: (player: MultiplayerPlayer) => void;
+  onPvpHit?: (event: MultiplayerPvpHit) => void;
+  onPvpKo?: (event: MultiplayerPvpKo) => void;
+  onPvpRespawn?: (player: MultiplayerPlayer) => void;
+  onPvpError?: (event: MultiplayerPvpError) => void;
 }
 
 export interface MultiplayerConnection {
@@ -111,6 +140,7 @@ export interface MultiplayerConnection {
     dir: 'down' | 'up' | 'left' | 'right',
   ): void;
   sendChat(text: string): void;
+  sendPvpAttack(targetSessionId: string): void;
   leave(): Promise<void>;
 }
 
@@ -147,9 +177,11 @@ export async function connectMultiplayer(options: {
   const ownSessionId = room.sessionId;
 
   room.onMessage('snapshot', (players: MultiplayerPlayer[]) => {
-    const remote = Array.isArray(players)
-      ? players.filter((player) => player.sessionId !== ownSessionId)
-      : [];
+    const list = Array.isArray(players) ? players : [];
+    const self = list.find((player) => player.sessionId === ownSessionId);
+    if (self) options.callbacks?.onPvpState?.(self);
+
+    const remote = list.filter((player) => player.sessionId !== ownSessionId);
     options.callbacks?.onSnapshot?.(remote);
   });
 
@@ -180,6 +212,26 @@ export async function connectMultiplayer(options: {
     }
   });
 
+  room.onMessage('pvp_hit', (event: MultiplayerPvpHit) => {
+    if (!event) return;
+    options.callbacks?.onPvpHit?.(event);
+  });
+
+  room.onMessage('pvp_ko', (event: MultiplayerPvpKo) => {
+    if (!event) return;
+    options.callbacks?.onPvpKo?.(event);
+  });
+
+  room.onMessage('pvp_respawn', (player: MultiplayerPlayer) => {
+    if (!player) return;
+    options.callbacks?.onPvpRespawn?.(player);
+  });
+
+  room.onMessage('pvp_error', (event: MultiplayerPvpError) => {
+    if (!event) return;
+    options.callbacks?.onPvpError?.(event);
+  });
+
   room.onLeave(() => {
     options.callbacks?.onStatus?.('offline');
   });
@@ -205,6 +257,12 @@ export async function connectMultiplayer(options: {
       const clean = text.replace(/\s+/g, ' ').trim().slice(0, 80);
       if (!clean) return;
       room.send('chat', { text: clean });
+    },
+
+    sendPvpAttack(targetSessionId) {
+      const target = targetSessionId.trim();
+      if (!target || target === ownSessionId) return;
+      room.send('pvp_attack', { targetSessionId: target });
     },
 
     async leave() {
