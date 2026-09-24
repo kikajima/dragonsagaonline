@@ -65,6 +65,7 @@ function playerPayload(userId: string, player: PlayerState) {
 }
 
 export default function Home() {
+  const pageRef = useRef<HTMLElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const gameRef = useRef<Game | null>(null);
   const chatInputRef = useRef<HTMLInputElement | null>(null);
@@ -540,6 +541,20 @@ export default function Home() {
     setTimeout(() => chatInputRef.current?.focus(), 30);
   }, []);
 
+  const toggleFullscreen = useCallback(async () => {
+    if (typeof document === 'undefined') return;
+
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await pageRef.current?.requestFullscreen();
+      }
+    } catch (error) {
+      console.warn('[mobile] fullscreen unavailable', error);
+    }
+  }, []);
+
   if (!authReady) {
     return (
       <main className="min-h-screen w-full flex items-center justify-center bg-black">
@@ -654,9 +669,9 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen w-full flex flex-col items-center justify-center bg-black overflow-hidden p-1 sm:p-3">
+    <main ref={pageRef} className="dso-game-page">
       <div
-        className="fixed right-2 top-2 z-50 flex items-center gap-2 rounded px-2 py-2"
+        className="dso-status-bar rounded px-2 py-2"
         style={{ background: 'rgba(5,7,13,0.92)', border: '1px solid #343a54' }}
       >
         <span style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 6, color: '#a8b0c0' }}>
@@ -691,6 +706,24 @@ export default function Home() {
                   ? 'MODO SOLO'
                   : 'OFFLINE'}
         </span>
+        {touchControls && (
+          <button
+            type="button"
+            onClick={() => void toggleFullscreen()}
+            title="Alternar tela cheia"
+            style={{
+              fontFamily: '"Press Start 2P", monospace',
+              fontSize: 6,
+              color: '#88c8f8',
+              background: 'transparent',
+              border: '1px solid #585878',
+              padding: '6px',
+              cursor: 'pointer',
+            }}
+          >
+            TELA
+          </button>
+        )}
         <button
           onClick={() => void handleSignOut()}
           title={saveError || 'Sair da conta'}
@@ -707,15 +740,8 @@ export default function Home() {
           SAIR
         </button>
       </div>
-      <div
-        className="relative w-full"
-        style={{
-          maxWidth: VW,
-          aspectRatio: `${VW}/${VH}`,
-          touchAction: 'none',
-          overscrollBehavior: 'contain',
-        }}
-      >
+      <div className="dso-game-shell">
+        <div className="dso-game-stage">
         <canvas
           ref={canvasRef}
           className="w-full h-full block rounded-sm"
@@ -727,134 +753,6 @@ export default function Home() {
           }}
           tabIndex={0}
         />
-
-        {touchControls && !showName && !showChat && (
-          <div
-            className="absolute inset-0 z-20"
-            style={{
-              pointerEvents: 'none',
-              userSelect: 'none',
-              WebkitUserSelect: 'none',
-            }}
-          >
-            <div
-              ref={joystickRef}
-              onPointerDown={startVirtualJoystick}
-              onPointerMove={moveVirtualJoystick}
-              onPointerUp={stopVirtualJoystick}
-              onPointerCancel={stopVirtualJoystick}
-              onLostPointerCapture={stopVirtualJoystick}
-              aria-label="Joystick virtual"
-              className="absolute"
-              style={{
-                left: 'max(12px, env(safe-area-inset-left))',
-                bottom: 'max(14px, env(safe-area-inset-bottom))',
-                width: 'clamp(92px, 18vw, 124px)',
-                aspectRatio: '1',
-                borderRadius: '50%',
-                border: '2px solid rgba(232,224,200,0.72)',
-                background: 'rgba(16,24,48,0.56)',
-                boxShadow: 'inset 0 0 0 10px rgba(40,56,104,0.26), 0 4px 18px rgba(0,0,0,0.35)',
-                pointerEvents: 'auto',
-                touchAction: 'none',
-              }}
-            >
-              <div
-                style={{
-                  position: 'absolute',
-                  left: '50%',
-                  top: '50%',
-                  width: '42%',
-                  aspectRatio: '1',
-                  borderRadius: '50%',
-                  transform: `translate(calc(-50% + ${stickPosition.x}px), calc(-50% + ${stickPosition.y}px))`,
-                  border: '2px solid #f8d030',
-                  background: 'rgba(40,56,104,0.94)',
-                  boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
-                  pointerEvents: 'none',
-                }}
-              />
-            </div>
-
-            <div
-              className="absolute flex items-end gap-2"
-              style={{
-                right: 'max(12px, env(safe-area-inset-right))',
-                bottom: 'max(14px, env(safe-area-inset-bottom))',
-                pointerEvents: 'auto',
-                touchAction: 'none',
-              }}
-            >
-              <button
-                type="button"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  openTouchChat();
-                }}
-                aria-label="Abrir chat"
-                style={{
-                  width: 'clamp(48px, 9vw, 64px)',
-                  height: 'clamp(34px, 6vw, 42px)',
-                  borderRadius: 8,
-                  border: '2px solid #88c8f8',
-                  background: 'rgba(16,24,48,0.84)',
-                  color: '#88c8f8',
-                  fontFamily: '"Press Start 2P", monospace',
-                  fontSize: 'clamp(5px, 1.1vw, 7px)',
-                  touchAction: 'none',
-                }}
-              >
-                CHAT
-              </button>
-
-              <button
-                type="button"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  touchAction('x');
-                }}
-                aria-label="Voltar ou abrir menu"
-                style={{
-                  width: 'clamp(54px, 11vw, 74px)',
-                  aspectRatio: '1',
-                  borderRadius: '50%',
-                  border: '2px solid #88c8f8',
-                  background: 'rgba(40,56,104,0.9)',
-                  color: '#fff',
-                  fontFamily: '"Press Start 2P", monospace',
-                  fontSize: 'clamp(11px, 2.4vw, 16px)',
-                  boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
-                  touchAction: 'none',
-                }}
-              >
-                B
-              </button>
-
-              <button
-                type="button"
-                onPointerDown={(event) => {
-                  event.preventDefault();
-                  touchAction('z');
-                }}
-                aria-label="Confirmar ou interagir"
-                style={{
-                  width: 'clamp(62px, 13vw, 84px)',
-                  aspectRatio: '1',
-                  borderRadius: '50%',
-                  border: '3px solid #f8d030',
-                  background: 'rgba(248,208,48,0.9)',
-                  color: '#101828',
-                  fontFamily: '"Press Start 2P", monospace',
-                  fontSize: 'clamp(14px, 3vw, 20px)',
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.45)',
-                  touchAction: 'none',
-                }}
-              >
-                A
-              </button>
-            </div>
-          </div>
-        )}
 
         {/* Name input overlay (character creation) */}
         {showName && (
@@ -951,10 +849,141 @@ export default function Home() {
             </button>
           </div>
         )}
+        </div>
+
+        {touchControls && !showName && !showChat && (
+          <div
+            className="dso-mobile-controls"
+            style={{
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
+            }}
+          >
+            <div
+              ref={joystickRef}
+              onPointerDown={startVirtualJoystick}
+              onPointerMove={moveVirtualJoystick}
+              onPointerUp={stopVirtualJoystick}
+              onPointerCancel={stopVirtualJoystick}
+              onLostPointerCapture={stopVirtualJoystick}
+              aria-label="Joystick virtual"
+              className="dso-joystick"
+              style={{
+                position: 'absolute',
+                left: 'max(12px, env(safe-area-inset-left))',
+                bottom: 'max(14px, env(safe-area-inset-bottom))',
+                width: 'clamp(92px, 18vw, 124px)',
+                aspectRatio: '1',
+                borderRadius: '50%',
+                border: '2px solid rgba(232,224,200,0.72)',
+                background: 'rgba(16,24,48,0.56)',
+                boxShadow: 'inset 0 0 0 10px rgba(40,56,104,0.26), 0 4px 18px rgba(0,0,0,0.35)',
+                pointerEvents: 'auto',
+                touchAction: 'none',
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: '50%',
+                  width: '42%',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  transform: `translate(calc(-50% + ${stickPosition.x}px), calc(-50% + ${stickPosition.y}px))`,
+                  border: '2px solid #f8d030',
+                  background: 'rgba(40,56,104,0.94)',
+                  boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+
+            <div
+              className="dso-touch-actions"
+              style={{
+                position: 'absolute',
+                right: 'max(12px, env(safe-area-inset-right))',
+                bottom: 'max(14px, env(safe-area-inset-bottom))',
+                pointerEvents: 'auto',
+                touchAction: 'none',
+              }}
+            >
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  openTouchChat();
+                }}
+                aria-label="Abrir chat"
+                style={{
+                  width: 'clamp(48px, 9vw, 64px)',
+                  height: 'clamp(34px, 6vw, 42px)',
+                  borderRadius: 8,
+                  border: '2px solid #88c8f8',
+                  background: 'rgba(16,24,48,0.84)',
+                  color: '#88c8f8',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(5px, 1.1vw, 7px)',
+                  touchAction: 'none',
+                }}
+              >
+                CHAT
+              </button>
+
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  touchAction('x');
+                }}
+                aria-label="Voltar ou abrir menu"
+                style={{
+                  width: 'clamp(54px, 11vw, 74px)',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  border: '2px solid #88c8f8',
+                  background: 'rgba(40,56,104,0.9)',
+                  color: '#fff',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(11px, 2.4vw, 16px)',
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
+                  touchAction: 'none',
+                }}
+              >
+                B
+              </button>
+
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  touchAction('z');
+                }}
+                aria-label="Confirmar ou interagir"
+                style={{
+                  width: 'clamp(62px, 13vw, 84px)',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  border: '3px solid #f8d030',
+                  background: 'rgba(248,208,48,0.9)',
+                  color: '#101828',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(14px, 3vw, 20px)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.45)',
+                  touchAction: 'none',
+                }}
+              >
+                A
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
 
       <p
-        className="mt-2 text-center"
+        className="dso-controls-help"
         style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: '#5a6078', lineHeight: 1.8 }}
       >
         {touchControls
