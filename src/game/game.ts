@@ -574,7 +574,6 @@ export class Game {
       });
 
       if (event.drop) {
-        this.player.items[event.drop] = (this.player.items[event.drop] || 0) + 1;
         this.addChat({
           name: 'Sistema',
           text: `Item obtido: ${ITEMS[event.drop]?.name || event.drop}`,
@@ -911,7 +910,18 @@ export class Game {
     if (q.id === 'q0' && !this.player.flags.kurin) { this.player.flags.kurin = true; this.toast = { text: 'Kurin entrou no grupo!', t: 4 }; }
     if (q.id === 'q1' && !this.player.flags.kurin) { this.player.flags.kurin = true; this.toast = { text: 'Kurin entrou no grupo!', t: 4 }; }
     if (q.id === 'q2' && !this.player.flags.nailo) { this.player.flags.nailo = true; this.toast = { text: 'Nailo entrou no grupo!', t: 4 }; }
-    this.player.questIdx++;
+    if (q.id === 'q5') {
+      this.player.questIdx = 0;
+      this.player.sagaCycle = (this.player.sagaCycle || 0) + 1;
+      this.addChat({
+        name: 'Saga',
+        text: `Saga ${this.player.sagaCycle + 1} liberada. Volte ao Mestre Kame para recomeçar a sequência!`,
+        color: '#f8d030',
+        sys: true,
+      });
+    } else {
+      this.player.questIdx++;
+    }
     this.player.questProgress = 0;
     this.save();
   }
@@ -1312,7 +1322,7 @@ export class Game {
     const done = q.target ? this.player.questProgress >= (q.count || 1) : false;
     if (q.id === 'q0') {
       this.showDialog([
-        { who: 'Mestre Kame', text: `Ah, ${this.player.name}! Sentei o seu Ki de longe. Você tem potencial!` },
+        { who: 'Mestre Kame', text: `Ah, ${this.player.name}! Saga ${(this.player.sagaCycle || 0) + 1}: seu Ki ainda pode crescer!` },
         { who: 'Mestre Kame', text: q.desc },
         { who: 'Mestre Kame', text: 'Leve estes 300 zeni e fale com os aliados na cidade. E cuidado com as criaturas!' },
       ], () => {
