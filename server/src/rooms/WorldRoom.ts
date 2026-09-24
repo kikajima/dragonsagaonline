@@ -1,7 +1,11 @@
 import { Client, Room, ServerError } from "colyseus";
 import {
+  DRAGON_BALL_SPOTS,
   ENEMY_RULES,
   MOB_SPAWNS,
+  QUEST_MASTER_POSITION,
+  QUEST_TARGETS,
+  SHOP_POSITION,
   SKILL_RULES,
   canUseSkill,
   canWalk,
@@ -20,7 +24,15 @@ interface CharacterRecord {
   hp: number;
   ki: number;
   gold: number;
-  state: Record<string, unknown> | null;
+  base_atk: number;
+  base_def: number;
+  items: Record<string, unknown>;
+  gear_owned: string[];
+  dragon_balls: string[];
+  flags: Record<string, unknown>;
+  quest_index: number;
+  quest_progress: number;
+  saga_cycle: number;
   x: number;
   y: number;
 }
@@ -42,6 +54,14 @@ interface OnlinePlayer {
   y: number;
   dir: Direction;
   level: number;
+  gold: number;
+  baseAtk: number;
+  baseDef: number;
+  gearOwned: string[];
+  dragonBalls: string[];
+  questIndex: number;
+  questProgress: number;
+  sagaCycle: number;
   attack: number;
   defense: number;
   maxHp: number;
@@ -209,8 +229,21 @@ interface RewardCharacterSnapshot {
   gold: number;
   hp: number;
   ki: number;
-  state: Record<string, unknown>;
+  base_atk: number;
+  base_def: number;
+  items: Record<string, unknown>;
+  gear_owned: string[];
+  dragon_balls: string[];
+  flags: Record<string, unknown>;
+  quest_index: number;
+  quest_progress: number;
+  saga_cycle: number;
   quest_completed?: boolean;
+  saga_completed?: boolean;
+  action?: string;
+  item_id?: string;
+  ball_key?: string;
+  wish?: string;
 }
 
 async function applyAuthoritativeReward(
@@ -226,7 +259,7 @@ async function applyAuthoritativeReward(
   const serverSecret = process.env.PVE_SERVER_SECRET;
   if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
 
-  const response = await fetch(`${url}/rest/v1/rpc/apply_pve_reward`, {
+  const response = await fetch(`${url}/rest/v1/rpc/apply_pve_reward_v2`, {
     method: "POST",
     headers: {
       apikey: publishableKey,
@@ -243,6 +276,7 @@ async function applyAuthoritativeReward(
       p_drop: drop,
       p_hp: hp,
       p_ki: ki,
+      p_items: player.items,
       p_server_secret: serverSecret,
     }),
   });
@@ -250,6 +284,39 @@ async function applyAuthoritativeReward(
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`Supabase reward RPC failed: ${response.status} ${detail}`);
+  }
+
+  return (await response.json()) as RewardCharacterSnapshot;
+}
+
+async function applyCharacterAction(
+  player: OnlinePlayer,
+  action: string,
+  data: Record<string, unknown> = {},
+): Promise<RewardCharacterSnapshot> {
+  const { url, publishableKey } = supabaseConfig();
+  const serverSecret = process.env.PVE_SERVER_SECRET;
+  if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
+
+  const response = await fetch(`${url}/rest/v1/rpc/apply_character_action`, {
+    method: "POST",
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${player.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_character_id: player.characterId,
+      p_action: action,
+      p_data: data,
+      p_server_secret: serverSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase character action failed: ${response.status} ${detail}`);
   }
 
   return (await response.json()) as RewardCharacterSnapshot;
@@ -273,7 +340,7 @@ async function loadOwnedCharacter(token: string, characterId: string): Promise<C
   const { url, publishableKey } = supabaseConfig();
   const query =
     `/rest/v1/characters?id=eq.${encodeURIComponent(characterId)}` +
-    "&select=id,user_id,name,class_id,level,xp,hp,ki,gold,state,x,y&limit=1";
+    "&select=id,user_id,name,class_id,level,xp,hp,ki,gold,base_atk,base_def,items,gear_owned,dragon_balls,flags,quest_index,quest_progress,saga_cycle,x,y&limit=1";
   const response = await fetch(`${url}${query}`, {
     headers: { apikey: publishableKey, Authorization: `Bearer ${token}`, Accept: "application/json" },
   });
