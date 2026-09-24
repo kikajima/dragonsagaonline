@@ -346,48 +346,99 @@ export class Game {
     this.startBattle([event.enemyId], event.isBoss);
   }
 
-  receivePveResult(event: { outcome: 'win' | 'fled' | 'lose'; battleId: string; enemyId?: string; exp?: number; zeni?: number; drop?: string | null; hp?: number; ki?: number }) {
+  receivePveResult(event: {
+    outcome: 'win' | 'fled' | 'lose';
+    battleId: string;
+    enemyId?: string;
+    exp?: number;
+    zeni?: number;
+    drop?: string | null;
+    hp?: number;
+    ki?: number;
+    character?: {
+      id: string;
+      level: number;
+      xp: number;
+      gold: number;
+      hp: number;
+      ki: number;
+      state: Record<string, unknown>;
+      quest_completed?: boolean;
+    };
+  }) {
     if (!event?.battleId || event.battleId !== this.activePveBattleId) return;
-    const enemyId = event.enemyId || this.lastDefeated;
+
+    const previousLevel = this.player.lv;
+    const previousQuestIdx = this.player.questIdx;
     this.activePveBattleId = '';
     this.activePveSpawnId = '';
     this.pendingPveSpawnId = '';
 
-    if (typeof event.hp === 'number') this.player.hp = Math.max(1, Math.floor(event.hp));
-    if (typeof event.ki === 'number') this.player.ki = Math.max(0, Math.floor(event.ki));
+    if (event.outcome === 'win' && event.character) {
+      const state = event.character.state as Partial<PlayerState>;
+      this.player = {
+        ...this.player,
+        ...state,
+        lv: Math.max(1, Math.floor(event.character.level)),
+        exp: Math.max(0, Number(event.character.xp)),
+        zeni: Math.max(0, Number(event.character.gold)),
+        hp: Math.max(1, Math.floor(event.character.hp)),
+        ki: Math.max(0, Math.floor(event.character.ki)),
+      };
 
-    if (event.outcome === 'win') {
-      const exp = Math.max(0, Math.floor(event.exp || 0));
-      const zeni = Math.max(0, Math.floor(event.zeni || 0));
-      this.player.exp += exp;
-      this.player.zeni += zeni;
-      if (event.drop) this.player.items[event.drop] = (this.player.items[event.drop] || 0) + 1;
-      this.addChat({ name: 'Sistema', text: `${this.player.name} venceu uma batalha! +${exp} EXP`, color: '#f8d030', sys: true });
+      this.addChat({
+        name: 'Sistema',
+        text: `${this.player.name} venceu uma batalha! +${Math.max(0, Math.floor(event.exp || 0))} EXP`,
+        color: '#f8d030',
+        sys: true,
+      });
 
-      const q = QUESTS[this.player.questIdx];
-      if (q && q.target && enemyId && q.target === enemyId) {
-        this.player.questProgress++;
-        if (this.player.questProgress >= (q.count || 1)) this.completeQuest();
-        else this.addChat({ name: 'Quest', text: `${q.title}: ${this.player.questProgress}/${q.count}`, color: '#88c8f8', sys: true });
+      if (event.drop) {
+        this.addChat({
+          name: 'Sistema',
+          text: `Item obtido: ${ITEMS[event.drop]?.name || event.drop}`,
+          color: '#88f0a0',
+          sys: true,
+        });
       }
 
-      let leveled = false;
-      while (this.player.exp >= expForLevel(this.player.lv)) {
-        this.player.exp -= expForLevel(this.player.lv);
-        this.player.lv++;
-        leveled = true;
-      }
-      if (leveled) {
+      if (this.player.questIdx > previousQuestIdx || event.character.quest_completed) {
         chip.sfx('levelup');
-        this.player.hp = this.maxHp();
-        this.player.ki = this.maxKi();
-        this.addChat({ name: 'Sistema', text: `${this.player.name} subiu para o nível ${this.player.lv}!`, color: '#88f0a0', sys: true });
-        if (this.player.lv >= 12 && !this.player.flags.super) {
-          this.player.flags.super = true;
+        this.toast = { text: 'MISSÃO COMPLETA!', t: 3 };
+      } else {
+        const q = QUESTS[this.player.questIdx];
+        if (q?.target && q.target === event.enemyId) {
+          this.addChat({
+            name: 'Quest',
+            text: `${q.title}: ${this.player.questProgress}/${q.count}`,
+            color: '#88c8f8',
+            sys: true,
+          });
+        }
+      }
+
+      if (this.player.lv > previousLevel) {
+        chip.sfx('levelup');
+        this.addChat({
+          name: 'Sistema',
+          text: `${this.player.name} subiu para o nível ${this.player.lv}!`,
+          color: '#88f0a0',
+          sys: true,
+        });
+        if (this.player.flags.super && previousLevel < 12) {
           this.toast = { text: 'FORMA SUPER DESBLOQUEADA!', t: 4 };
         }
       }
-    } else if (event.outcome === 'lose') {
+
+      this.refreshBalls();
+      this.save();
+      return;
+    }
+
+    if (typeof event.hp === 'number') this.player.hp = Math.max(1, Math.floor(event.hp));
+    if (typeof event.ki === 'number') this.player.ki = Math.max(0, Math.floor(event.ki));
+
+    if (event.outcome === 'lose') {
       this.player.hp = Math.floor(this.maxHp() / 2);
       this.player.ki = Math.floor(this.maxKi() / 2);
       this.player.zeni = Math.floor(this.player.zeni / 2);
