@@ -190,6 +190,7 @@ export interface MultiplayerConnection {
     dir: 'down' | 'up' | 'left' | 'right',
   ): void;
   sendChat(text: string): void;
+  updateAuthToken(accessToken: string): void;
   sendPvpAttack(targetSessionId: string): void;
   sendPveBegin(spawnId: string): void;
   sendPveComplete(payload: {
@@ -338,6 +339,12 @@ export async function connectMultiplayer(options: {
       const clean = text.replace(/\s+/g, ' ').trim().slice(0, 80);
       if (!clean) return;
       room.send('chat', { text: clean });
+    },
+
+    updateAuthToken(accessToken) {
+      const token = accessToken.trim();
+      if (!token) return;
+      room.send('auth_refresh', { accessToken: token });
     },
 
     sendPvpAttack(targetSessionId) {
