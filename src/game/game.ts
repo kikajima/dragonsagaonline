@@ -2029,6 +2029,7 @@ export class Game {
     if (!items.length) return;
     trade.itemIdx = Math.max(0, Math.min(trade.itemIdx, items.length - 1));
     const selected = items[trade.itemIdx];
+    if (!selected) return;
     trade.quantity = Math.max(1, Math.min(trade.quantity, selected.quantity));
     const selectedName = ITEMS[selected.id]?.name || selected.id;
     const ownOffer = trade.selfOffer
@@ -2193,7 +2194,8 @@ export class Game {
         chip.sfx('menu');
         return true;
       }
-      const selected = items[this.tradeUi.itemIdx];
+      const selected = items[Math.max(0, Math.min(this.tradeUi.itemIdx, items.length - 1))];
+      if (!selected) return true;
       if (k === 'ArrowLeft' || k === 'ArrowRight') {
         if (selected.quantity > 1) {
           const delta = k === 'ArrowRight' ? 1 : -1;
