@@ -76,6 +76,8 @@ export class Battle {
   menuTimer = 0;
   onEnd: ((r: BattleResult) => void) | null = null;
   onCommand: ((event: BattleCommandEvent) => void) | null = null;
+  authoritative = false;
+  authoritativePending = false;
   goldFlash = 0;
   popups: { x: number; y: number; text: string; t: number; color: string }[] = [];
 
@@ -121,6 +123,15 @@ export class Battle {
 
   // Advance to next actor and open menu / run enemy AI
   beginTurn() {
+    if (this.authoritative) {
+      const player = this.party[0];
+      const idx = this.turnOrder.indexOf(player);
+      this.currentIdx = idx >= 0 ? idx : 0;
+      this.phase = 'menu';
+      this.menuIdx = 0;
+      return;
+    }
+
     const next = this.nextActor();
     if (!next) { this.win(); return; }
     if (next.side === 'party') {
@@ -149,8 +160,19 @@ export class Battle {
   }
 
   playerCommand(action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform', skillId?: string, itemId?: string, target?: Fighter) {
-    const actor = this.turnOrder[this.currentIdx];
+    const actor = this.authoritative ? this.party[0] : this.turnOrder[this.currentIdx];
     if (!actor) return;
+
+    if (this.authoritative) {
+      if (this.authoritativePending) return;
+      this.authoritativePending = true;
+      this.onCommand?.({ action, skillId, itemId });
+      this.phase = 'anim';
+      this.anim = null;
+      this.finishDelay = 999;
+      return;
+    }
+
     this.onCommand?.({ action, skillId, itemId });
     this.queue.push({ actor, action, skillId, itemId, target });
     this.phase = 'anim';
@@ -809,6 +831,7 @@ export class Battle {
   syncAuthoritativeState(state: AuthoritativeBattleState) {
     const player = this.party[0];
     const enemy = this.enemies[0];
+    this.authoritativePending = false;
 
     if (player) {
       player.hp = Math.max(0, Math.min(player.maxHp, Math.floor(state.playerHp)));
@@ -844,6 +867,8 @@ export class Battle {
       this.result = { win: false, fled: true, exp: 0, zeni: 0, drops: [] };
       this.phase = 'end';
       this.menuTimer = 0.15;
+    } else if (this.authoritative) {
+      this.beginTurn();
     }
   }
 
