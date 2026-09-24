@@ -827,11 +827,19 @@ export class Battle {
         fighter.hp = 0;
         fighter.alive = false;
       });
+      if (this.phase !== 'end' && this.phase !== 'gameover') {
+        this.win();
+        this.menuTimer = Math.min(this.menuTimer, 0.35);
+      }
     } else if (state.outcome === 'lose') {
       this.party.forEach((fighter) => {
         fighter.hp = 0;
         fighter.alive = false;
       });
+      if (this.phase !== 'end' && this.phase !== 'gameover') {
+        this.lose();
+        this.menuTimer = Math.min(this.menuTimer, 0.35);
+      }
     } else if (state.outcome === 'fled') {
       this.result = { win: false, fled: true, exp: 0, zeni: 0, drops: [] };
       this.phase = 'end';
