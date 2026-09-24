@@ -396,7 +396,14 @@ export class WorldRoom extends Room {
       if (canWalk(player.x, nextY)) player.y = nextY;
       if (payload?.dir && DIRECTIONS.has(payload.dir)) player.dir = payload.dir;
       player.lastMoveAt = now;
-      this.broadcast("player_move", { ...publicPlayer(player), seq: payload?.seq ?? 0 }, { except: client });
+      const seq = Number.isFinite(Number(payload?.seq)) ? Math.floor(Number(payload?.seq)) : 0;
+      client.send("move_ack", {
+        x: player.x,
+        y: player.y,
+        dir: player.dir,
+        seq,
+      });
+      this.broadcast("player_move", { ...publicPlayer(player), seq }, { except: client });
     },
 
     chat: (client: Client, payload: ChatPayload) => {
