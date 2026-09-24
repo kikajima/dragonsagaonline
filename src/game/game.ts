@@ -417,6 +417,20 @@ export class Game {
     this.worldActionHandler = cb;
   }
 
+  private normalizeSagaState() {
+    const questIdx = Number(this.player.questIdx);
+    if (!Number.isFinite(questIdx) || questIdx < 0) {
+      this.player.questIdx = 0;
+      this.player.questProgress = 0;
+      return;
+    }
+    if (questIdx >= QUESTS.length) {
+      this.player.questIdx = 0;
+      this.player.questProgress = 0;
+      this.player.sagaCycle = Math.max(1, Number(this.player.sagaCycle) || 0);
+    }
+  }
+
   private applyAuthoritativeCharacter(character: {
     level: number;
     xp: number;
@@ -435,6 +449,7 @@ export class Game {
       hp: Math.max(1, Math.floor(character.hp)),
       ki: Math.max(0, Math.floor(character.ki)),
     };
+    this.normalizeSagaState();
     this.refreshBalls();
   }
 
@@ -708,6 +723,8 @@ export class Game {
     const spawn = this.spawns.find((item) => item.spawnId === event.spawnId) || null;
     this.activeBoss = event.isBoss ? spawn : null;
     this.startBattle([event.enemyId], event.isBoss);
+    this.fade = Math.max(this.fade, 0.42);
+    this.fadeDir = -1;
     this.battle?.syncAuthoritativeState({
       playerHp: event.playerHp,
       playerKi: event.playerKi,
@@ -734,6 +751,13 @@ export class Game {
     }
 
     this.battle.syncAuthoritativeState(event);
+  }
+
+  receivePveError(message = 'Batalha indisponível.') {
+    this.pendingPveSpawnId = '';
+    this.activePveSpawnId = '';
+    this.fadeDir = -1;
+    this.toast = { text: message, t: 1.4 };
   }
 
   receivePveResult(event: {
@@ -1188,6 +1212,7 @@ export class Game {
     if (!this.persistedPlayer) return false;
     const p = this.persistedPlayer;
     this.player = { ...this.newPlayer(), ...p };
+    this.normalizeSagaState();
     this.px = typeof p.x === 'number' && p.x > 0 ? p.x : this.px;
     this.py = typeof p.y === 'number' && p.y > 0 ? p.y : this.py;
     this.refreshBalls();
@@ -1395,6 +1420,10 @@ export class Game {
           } else if (this.pveBeginHandler) {
             this.pendingPveSpawnId = s.spawnId;
             this.battleCooldown = 1;
+            this.clearTouchVector();
+            this.keys.clear();
+            this.fade = Math.max(this.fade, 0.08);
+            this.fadeDir = 1;
             this.pveBeginHandler(s.spawnId);
           }
         }
