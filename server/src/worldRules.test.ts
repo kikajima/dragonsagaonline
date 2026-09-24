@@ -4,6 +4,7 @@ import {
   ENEMY_RULES,
   canWalk,
   computeCharacterStats,
+  isPvpSafeZone,
   minimumBattleDurationMs,
 } from "./worldRules.js";
 
@@ -36,4 +37,9 @@ test("battle validation duration stays bounded", () => {
   const duration = minimumBattleDurationMs(ENEMY_RULES.saiba!, stats);
   assert.ok(duration >= 1800);
   assert.ok(duration <= 12000);
+});
+
+test("city is a PvP safe zone while the plains are not", () => {
+  assert.equal(isPvpSafeZone(19.5 * 16, 30 * 16), true);
+  assert.equal(isPvpSafeZone(44 * 16, 55 * 16), false);
 });
