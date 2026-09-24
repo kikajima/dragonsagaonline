@@ -88,6 +88,27 @@ export interface MultiplayerPveError {
   message: string;
 }
 
+export interface MultiplayerWorldActionCharacter {
+  id: string;
+  level: number;
+  xp: number;
+  gold: number;
+  hp: number;
+  ki: number;
+  state: Record<string, unknown>;
+}
+
+export interface MultiplayerWorldActionResult {
+  action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest';
+  arg: string;
+  character: MultiplayerWorldActionCharacter;
+}
+
+export interface MultiplayerWorldActionError {
+  action?: string;
+  message: string;
+}
+
 export interface MultiplayerPveState {
   battleId: string;
   playerHp: number;
@@ -138,6 +159,8 @@ export interface MultiplayerCallbacks {
   onPveResult?: (event: MultiplayerPveResult) => void;
   onPveState?: (event: MultiplayerPveState) => void;
   onPveError?: (event: MultiplayerPveError) => void;
+  onWorldActionResult?: (event: MultiplayerWorldActionResult) => void;
+  onWorldActionError?: (event: MultiplayerWorldActionError) => void;
 }
 
 export interface MultiplayerConnection {
@@ -164,6 +187,10 @@ export interface MultiplayerConnection {
     hp: number;
     ki: number;
   }): void;
+  sendWorldAction(
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest',
+    arg?: string,
+  ): void;
   leave(): Promise<void>;
 }
 
@@ -300,6 +327,16 @@ export async function connectMultiplayer(options: {
     options.callbacks?.onPveError?.(event);
   });
 
+  room.onMessage('world_action_result', (event: MultiplayerWorldActionResult) => {
+    if (!event) return;
+    options.callbacks?.onWorldActionResult?.(event);
+  });
+
+  room.onMessage('world_action_error', (event: MultiplayerWorldActionError) => {
+    if (!event) return;
+    options.callbacks?.onWorldActionError?.(event);
+  });
+
   room.onLeave(() => {
     options.callbacks?.onStatus?.('offline');
   });
@@ -353,6 +390,10 @@ export async function connectMultiplayer(options: {
     sendPveComplete(payload) {
       if (!payload?.battleId) return;
       room.send('pve_complete', payload);
+    },
+
+    sendWorldAction(action, arg = '') {
+      room.send('world_action', { action, arg });
     },
 
     async leave() {
