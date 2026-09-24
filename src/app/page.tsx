@@ -458,6 +458,12 @@ export default function Home() {
           game.pendingPveSpawnId = '';
           game.toast = { text: event.message || 'Batalha indisponível.', t: 1.4 };
         },
+        onWorldActionResult(event) {
+          if (!cancelled) game.receiveWorldActionResult(event);
+        },
+        onWorldActionError(event) {
+          if (!cancelled) game.receiveWorldActionError(event);
+        },
       },
     })
       .then((connection) => {
@@ -477,6 +483,9 @@ export default function Home() {
           (payload) => multiplayerRef.current?.sendPveAction(payload),
           (payload) => multiplayerRef.current?.sendPveComplete(payload),
         );
+        game.setWorldActionHandler((action, arg) => {
+          multiplayerRef.current?.sendWorldAction(action, arg);
+        });
         setMultiplayerStatus('online');
         setMultiplayerMessage('');
 
@@ -539,6 +548,7 @@ export default function Home() {
       multiplayerRef.current = null;
       game.setPvpAttackHandler(null);
       game.setPveHandlers(null, null, null);
+      game.setWorldActionHandler(null);
       game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
