@@ -79,6 +79,23 @@ interface RemotePlayerView extends RemotePlayerNetworkState {
   hitT: number;
 }
 
+interface TradeOfferView {
+  itemId: string;
+  quantity: number;
+}
+
+interface TradeUiState {
+  tradeId: string;
+  otherSessionId: string;
+  otherName: string;
+  itemIdx: number;
+  quantity: number;
+  selfOffer: TradeOfferView | null;
+  otherOffer: TradeOfferView | null;
+  selfAccepted: boolean;
+  otherAccepted: boolean;
+}
+
 interface Spawn {
   spawnId?: string;
   enemyId: string;
@@ -122,6 +139,13 @@ export class Game {
   }) => void) | null = null;
   pveCompleteHandler: ((payload: { battleId: string; outcome: 'win' | 'fled' | 'lose'; hp: number; ki: number }) => void) | null = null;
   worldActionHandler: ((action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal', arg?: string) => void) | null = null;
+  tradeHandler: ((action: 'request' | 'offer' | 'accept' | 'cancel', payload: {
+    targetSessionId?: string;
+    tradeId?: string;
+    itemId?: string;
+    quantity?: number;
+  }) => void) | null = null;
+  tradeUi: TradeUiState | null = null;
   pendingWorldActions = new Set<string>();
   activePveBattleId = '';
   activePveSpawnId = '';
@@ -280,6 +304,8 @@ export class Game {
       this.pendingPveSpawnId = '';
       this.pveActionHandler = null;
       this.worldActionHandler = null;
+      this.tradeHandler = null;
+      this.tradeUi = null;
       this.pendingWorldActions.clear();
     }
   }
@@ -443,6 +469,116 @@ export class Game {
     this.pendingWorldActions.add(key);
     this.worldActionHandler(action, arg);
     return true;
+  }
+
+  setTradeHandler(
+    cb: ((action: 'request' | 'offer' | 'accept' | 'cancel', payload: {
+      targetSessionId?: string;
+      tradeId?: string;
+      itemId?: string;
+      quantity?: number;
+    }) => void) | null,
+  ) {
+    this.tradeHandler = cb;
+  }
+
+  private tradeItems(): Array<{ id: string; quantity: number }> {
+    const list: Array<{ id: string; quantity: number }> = [];
+    for (const [id, quantity] of Object.entries(this.player.items)) {
+      if (quantity > 0 && ITEMS[id]) list.push({ id, quantity });
+    }
+    for (const id of this.player.gearOwned) {
+      if (ITEMS[id]) list.push({ id, quantity: 1 });
+    }
+    return list;
+  }
+
+  requestTradeWithFacingPlayer() {
+    if (!this.multiplayerActive || !this.tradeHandler || this.tradeUi) return;
+    const remote = this.facingRemotePlayer();
+    if (!remote) {
+      this.toast = { text: 'Fique de frente para outro jogador para negociar.', t: 1.8 };
+      chip.sfx('cancel');
+      return;
+    }
+    this.tradeHandler('request', { targetSessionId: remote.sessionId });
+  }
+
+  receiveTradeOpen(event: { tradeId: string; otherSessionId: string; otherName: string }) {
+    const items = this.tradeItems();
+    if (!items.length) {
+      this.tradeHandler?.('cancel', { tradeId: event.tradeId });
+      this.toast = { text: 'Você não possui itens negociáveis.', t: 1.8 };
+      return;
+    }
+    this.menuOpen = false;
+    this.shop = null;
+    this.dialog = null;
+    this.tradeUi = {
+      tradeId: event.tradeId,
+      otherSessionId: event.otherSessionId,
+      otherName: event.otherName,
+      itemIdx: 0,
+      quantity: 1,
+      selfOffer: null,
+      otherOffer: null,
+      selfAccepted: false,
+      otherAccepted: false,
+    };
+    chip.sfx('confirm');
+  }
+
+  receiveTradeState(event: {
+    tradeId: string;
+    selfOffer: TradeOfferView | null;
+    otherOffer: TradeOfferView | null;
+    selfAccepted: boolean;
+    otherAccepted: boolean;
+  }) {
+    if (!this.tradeUi || this.tradeUi.tradeId !== event.tradeId) return;
+    this.tradeUi.selfOffer = event.selfOffer;
+    this.tradeUi.otherOffer = event.otherOffer;
+    this.tradeUi.selfAccepted = event.selfAccepted;
+    this.tradeUi.otherAccepted = event.otherAccepted;
+  }
+
+  receiveTradeComplete(event: {
+    tradeId: string;
+    otherName: string;
+    character: {
+      level: number;
+      xp: number;
+      gold: number;
+      hp: number;
+      ki: number;
+      x?: number;
+      y?: number;
+      state: Record<string, unknown>;
+    };
+  }) {
+    if (!this.tradeUi || this.tradeUi.tradeId !== event.tradeId) return;
+    this.applyAuthoritativeCharacter(event.character);
+    this.tradeUi = null;
+    this.toast = { text: `Troca concluída com ${event.otherName}!`, t: 2.2 };
+    this.addChat({
+      name: 'Troca',
+      text: `Negociação concluída com ${event.otherName}.`,
+      color: '#88f0a0',
+      sys: true,
+    });
+    chip.sfx('coin');
+    this.save();
+  }
+
+  receiveTradeCancelled(event: { tradeId: string; message: string }) {
+    if (this.tradeUi?.tradeId === event.tradeId) this.tradeUi = null;
+    this.toast = { text: event.message || 'Troca cancelada.', t: 1.8 };
+    chip.sfx('cancel');
+  }
+
+  receiveTradeError(event: { message: string }) {
+    this.toast = { text: event.message || 'Não foi possível negociar.', t: 1.8 };
+    chip.sfx('cancel');
   }
 
   setMobSnapshot(mobs: Array<{ spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }>) {
@@ -1746,6 +1882,7 @@ export class Game {
     if (this.dialog) this.renderDialog(g);
     if (this.shop) this.renderShop(g);
     if (this.menuOpen) this.renderMenu(g);
+    if (this.tradeUi) this.renderTrade(g);
   }
 
   renderHud(g: CanvasRenderingContext2D) {
@@ -1849,7 +1986,7 @@ export class Game {
     });
 
     // controls hint
-    pText(g, 'WASD/setas: mover  Z: falar/confirmar  X: menu', 12, VH - 34, 6, 'rgba(232,232,240,0.75)');
+    pText(g, 'WASD/setas: mover  Z: agir/PvP  T: troca  X: menu', 12, VH - 34, 6, 'rgba(232,232,240,0.75)');
 
   }
 
@@ -1883,6 +2020,39 @@ export class Game {
     const selItem = ITEMS[stock[this.shop!.idx]];
     const lines = wrapText(g, selItem.desc, 420, 8);
     lines.forEach((l, i) => pText(g, l, VW / 2 - 206, 416 + i * 12, 8, '#c8d0e0'));
+  }
+
+  renderTrade(g: CanvasRenderingContext2D) {
+    const trade = this.tradeUi;
+    if (!trade) return;
+    const items = this.tradeItems();
+    if (!items.length) return;
+    trade.itemIdx = Math.max(0, Math.min(trade.itemIdx, items.length - 1));
+    const selected = items[trade.itemIdx];
+    trade.quantity = Math.max(1, Math.min(trade.quantity, selected.quantity));
+    const selectedName = ITEMS[selected.id]?.name || selected.id;
+    const ownOffer = trade.selfOffer
+      ? `${ITEMS[trade.selfOffer.itemId]?.name || trade.selfOffer.itemId} x${trade.selfOffer.quantity}`
+      : 'nenhuma';
+    const otherOffer = trade.otherOffer
+      ? `${ITEMS[trade.otherOffer.itemId]?.name || trade.otherOffer.itemId} x${trade.otherOffer.quantity}`
+      : 'aguardando';
+
+    panel(g, VW / 2 - 250, 110, 500, 350, '#88c8f8', 'rgba(10,14,30,0.96)');
+    pTextC(g, `TROCA COM ${trade.otherName}`, VW / 2, 128, 11, '#f8d030');
+    pText(g, 'Sua seleção:', VW / 2 - 220, 168, 8, '#a8b0c0');
+    pText(g, `> ${selectedName} x${trade.quantity}`, VW / 2 - 200, 190, 9, '#fff');
+    pText(g, `Sua oferta: ${ownOffer}`, VW / 2 - 220, 228, 8, trade.selfAccepted ? '#88f0a0' : '#88c8f8');
+    pText(g, `Oferta de ${trade.otherName}: ${otherOffer}`, VW / 2 - 220, 254, 8, trade.otherAccepted ? '#88f0a0' : '#f8d030');
+
+    const ownStatus = trade.selfAccepted ? 'CONFIRMADO' : 'PENDENTE';
+    const otherStatus = trade.otherAccepted ? 'CONFIRMADO' : 'PENDENTE';
+    pText(g, `Você: ${ownStatus}`, VW / 2 - 220, 294, 8, trade.selfAccepted ? '#88f0a0' : '#fff');
+    pText(g, `${trade.otherName}: ${otherStatus}`, VW / 2 - 220, 318, 8, trade.otherAccepted ? '#88f0a0' : '#fff');
+
+    pText(g, '↑↓ item  ←→ quantidade', VW / 2 - 220, 370, 7, '#a8b0c0');
+    pText(g, 'Z: enviar oferta / confirmar   X: cancelar', VW / 2 - 220, 392, 7, '#a8b0c0');
+    pText(g, 'A troca só ocorre após confirmação dos dois.', VW / 2 - 220, 424, 7, '#88c8f8');
   }
 
   renderMenu(g: CanvasRenderingContext2D) {
@@ -2003,6 +2173,60 @@ export class Game {
       }
       return false;
     }
+    // player trade
+    if (this.tradeUi) {
+      const items = this.tradeItems();
+      if (!items.length) {
+        this.tradeHandler?.('cancel', { tradeId: this.tradeUi.tradeId });
+        this.tradeUi = null;
+        return true;
+      }
+      if (k === 'ArrowUp') {
+        this.tradeUi.itemIdx = (this.tradeUi.itemIdx + items.length - 1) % items.length;
+        this.tradeUi.quantity = 1;
+        chip.sfx('menu');
+        return true;
+      }
+      if (k === 'ArrowDown') {
+        this.tradeUi.itemIdx = (this.tradeUi.itemIdx + 1) % items.length;
+        this.tradeUi.quantity = 1;
+        chip.sfx('menu');
+        return true;
+      }
+      const selected = items[this.tradeUi.itemIdx];
+      if (k === 'ArrowLeft' || k === 'ArrowRight') {
+        if (selected.quantity > 1) {
+          const delta = k === 'ArrowRight' ? 1 : -1;
+          this.tradeUi.quantity = Math.max(1, Math.min(selected.quantity, this.tradeUi.quantity + delta));
+          chip.sfx('menu');
+        }
+        return true;
+      }
+      if (k === 'z' || k === 'Z' || k === 'Enter') {
+        const offerMatches =
+          this.tradeUi.selfOffer?.itemId === selected.id &&
+          this.tradeUi.selfOffer?.quantity === this.tradeUi.quantity;
+        if (offerMatches && this.tradeUi.otherOffer) {
+          this.tradeHandler?.('accept', { tradeId: this.tradeUi.tradeId });
+        } else {
+          this.tradeHandler?.('offer', {
+            tradeId: this.tradeUi.tradeId,
+            itemId: selected.id,
+            quantity: this.tradeUi.quantity,
+          });
+        }
+        chip.sfx('confirm');
+        return true;
+      }
+      if (k === 'x' || k === 'X' || k === 'Escape') {
+        this.tradeHandler?.('cancel', { tradeId: this.tradeUi.tradeId });
+        this.tradeUi = null;
+        chip.sfx('cancel');
+        return true;
+      }
+      return true;
+    }
+
     // dragon
     if (this.state === 'dragon') {
       if (this.dragonPhase === 0) {
@@ -2099,6 +2323,7 @@ export class Game {
         return true;
       }
       if (k === 'x' || k === 'Escape') { this.menuOpen = true; this.menuIdx = 0; chip.sfx('confirm'); return true; }
+      if (k === 't' || k === 'T') { this.requestTradeWithFacingPlayer(); return true; }
       if (k === 'm' || k === 'M') { chip.setEnabled(!chip.enabled); return true; }
     }
     return false;
