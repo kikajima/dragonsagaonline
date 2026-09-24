@@ -325,10 +325,12 @@ export async function listCharacters(): Promise<CharacterRow[]> {
 export async function createCharacter(
   payload: CharacterPayload,
 ): Promise<CharacterRow> {
-  const response = await dataFetch('/characters?select=*', {
+  const response = await dataFetch('/rpc/create_character_client', {
     method: 'POST',
-    headers: { Prefer: 'return=representation' },
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      p_name: payload.name,
+      p_class_id: payload.class_id,
+    }),
   });
 
   if (!response.ok) {
@@ -338,24 +340,37 @@ export async function createCharacter(
     );
   }
 
-  const rows = (await response.json()) as CharacterRow[];
-  if (!rows[0]) {
+  const result = (await response.json()) as CharacterRow | CharacterRow[];
+  const row = Array.isArray(result) ? result[0] : result;
+  if (!row?.id) {
     throw new Error('O personagem foi criado sem retorno do banco.');
   }
 
-  return rows[0];
+  return row;
 }
 
 export async function updateCharacter(
   id: string,
   payload: Partial<CharacterPayload>,
 ): Promise<CharacterRow> {
+  const safePayload = {
+    ...(typeof payload.hp === 'number' ? { hp: payload.hp } : {}),
+    ...(typeof payload.ki === 'number' ? { ki: payload.ki } : {}),
+    ...(typeof payload.map_id === 'string' ? { map_id: payload.map_id } : {}),
+    ...(typeof payload.x === 'number' ? { x: payload.x } : {}),
+    ...(typeof payload.y === 'number' ? { y: payload.y } : {}),
+    ...(payload.state ? { state: payload.state } : {}),
+    ...(typeof payload.last_played_at === 'string'
+      ? { last_played_at: payload.last_played_at }
+      : {}),
+  };
+
   const response = await dataFetch(
     `/characters?id=eq.${encodeURIComponent(id)}&select=*`,
     {
       method: 'PATCH',
       headers: { Prefer: 'return=representation' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(safePayload),
     },
   );
 
