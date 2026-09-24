@@ -81,6 +81,8 @@ export interface MultiplayerPveResult {
   drop?: string | null;
   hp?: number;
   ki?: number;
+  x?: number;
+  y?: number;
   character?: MultiplayerPveCharacter;
 }
 
@@ -95,11 +97,13 @@ export interface MultiplayerWorldActionCharacter {
   gold: number;
   hp: number;
   ki: number;
+  x?: number;
+  y?: number;
   state: Record<string, unknown>;
 }
 
 export interface MultiplayerWorldActionResult {
-  action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest';
+  action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal';
   arg: string;
   character: MultiplayerWorldActionCharacter;
 }
@@ -151,7 +155,7 @@ export interface MultiplayerCallbacks {
   onPvpState?: (player: MultiplayerPlayer) => void;
   onPvpHit?: (event: MultiplayerPvpHit) => void;
   onPvpKo?: (event: MultiplayerPvpKo) => void;
-  onPvpRespawn?: (player: MultiplayerPlayer) => void;
+  onPvpRespawn?: (player: MultiplayerPlayer & { character?: MultiplayerWorldActionCharacter }) => void;
   onPvpError?: (event: MultiplayerPvpError) => void;
   onMobSnapshot?: (mobs: MultiplayerMob[]) => void;
   onMobUpdate?: (mob: MultiplayerMob) => void;
@@ -188,7 +192,7 @@ export interface MultiplayerConnection {
     ki: number;
   }): void;
   sendWorldAction(
-    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest',
+    action: 'shop_buy' | 'world_item' | 'collect_ball' | 'wish' | 'master_quest' | 'fountain_heal',
     arg?: string,
   ): void;
   leave(): Promise<void>;
