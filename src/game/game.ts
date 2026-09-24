@@ -476,10 +476,10 @@ export class Game {
           this.toast = { text: 'FORMA SUPER DESBLOQUEADA!', t: 4 };
         }
       }
-      // clear dead boss spawn
+      // defeated bosses also respawn, but on a much longer MMO timer
       if (this.activeBoss && this.lastDefeated === this.activeBoss.enemyId) {
         this.activeBoss.dead = true;
-        this.activeBoss.respawnT = 1e9;
+        this.activeBoss.respawnT = 90 + Math.random() * 60;
         this.activeBoss = null;
       }
       this.save();
