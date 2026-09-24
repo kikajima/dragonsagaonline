@@ -464,6 +464,21 @@ export default function Home() {
         onWorldActionError(event) {
           if (!cancelled) game.receiveWorldActionError(event);
         },
+        onTradeOpen(event) {
+          if (!cancelled) game.receiveTradeOpen(event);
+        },
+        onTradeState(event) {
+          if (!cancelled) game.receiveTradeState(event);
+        },
+        onTradeComplete(event) {
+          if (!cancelled) game.receiveTradeComplete(event);
+        },
+        onTradeCancelled(event) {
+          if (!cancelled) game.receiveTradeCancelled(event);
+        },
+        onTradeError(event) {
+          if (!cancelled) game.receiveTradeError(event);
+        },
       },
     })
       .then((connection) => {
@@ -485,6 +500,19 @@ export default function Home() {
         );
         game.setWorldActionHandler((action, arg) => {
           multiplayerRef.current?.sendWorldAction(action, arg);
+        });
+        game.setTradeHandler((action, payload) => {
+          const connection = multiplayerRef.current;
+          if (!connection) return;
+          if (action === 'request' && payload.targetSessionId) {
+            connection.sendTradeRequest(payload.targetSessionId);
+          } else if (action === 'offer' && payload.tradeId && payload.itemId && payload.quantity) {
+            connection.sendTradeOffer(payload.tradeId, payload.itemId, payload.quantity);
+          } else if (action === 'accept' && payload.tradeId) {
+            connection.sendTradeAccept(payload.tradeId);
+          } else if (action === 'cancel' && payload.tradeId) {
+            connection.sendTradeCancel(payload.tradeId);
+          }
         });
         setMultiplayerStatus('online');
         setMultiplayerMessage('');
@@ -549,6 +577,7 @@ export default function Home() {
       game.setPvpAttackHandler(null);
       game.setPveHandlers(null, null, null);
       game.setWorldActionHandler(null);
+      game.setTradeHandler(null);
       game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
@@ -618,6 +647,7 @@ export default function Home() {
       !game.dialog &&
       !game.shop &&
       !game.menuOpen &&
+      !game.tradeUi &&
       !showName &&
       !showChat;
 
@@ -690,7 +720,8 @@ export default function Home() {
       game.state !== 'world' ||
       game.dialog ||
       game.shop ||
-      game.menuOpen
+      game.menuOpen ||
+      game.tradeUi
     ) {
       return;
     }
@@ -1191,6 +1222,28 @@ export default function Home() {
                 type="button"
                 onPointerDown={(event) => {
                   event.preventDefault();
+                  touchAction('t');
+                }}
+                aria-label="Negociar com jogador"
+                style={{
+                  width: 'clamp(48px, 9vw, 64px)',
+                  height: 'clamp(34px, 6vw, 42px)',
+                  borderRadius: 8,
+                  border: '2px solid #88f0a0',
+                  background: 'rgba(16,24,48,0.84)',
+                  color: '#88f0a0',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(5px, 1.1vw, 7px)',
+                  touchAction: 'none',
+                }}
+              >
+                TROCA
+              </button>
+
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
                   openTouchChat();
                 }}
                 aria-label="Abrir chat"
@@ -1265,8 +1318,8 @@ export default function Home() {
         style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: '#5a6078', lineHeight: 1.8 }}
       >
         {touchControls
-          ? 'JOYSTICK mover/navegar · A confirmar/falar · B menu/voltar · CHAT conversar'
-          : 'WASD/SETAS mover · Z/ENTER falar & confirmar · X menu · ENTER abrir chat · M som'}
+          ? 'JOYSTICK mover/navegar · A confirmar · B voltar · TROCA negociar · CHAT conversar'
+          : 'WASD/SETAS mover · Z/ENTER agir · T trocar · X menu · ENTER chat · M som'}
       </p>
     </main>
   );
