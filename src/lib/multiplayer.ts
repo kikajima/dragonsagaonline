@@ -84,6 +84,15 @@ export interface MultiplayerPveError {
   message: string;
 }
 
+export interface MultiplayerPveState {
+  battleId: string;
+  playerHp: number;
+  playerKi: number;
+  enemyHp: number;
+  enemyMaxHp: number;
+  outcome: 'active' | 'win' | 'lose' | 'fled';
+}
+
 export type MultiplayerStatus =
   | 'disabled'
   | 'connecting'
@@ -117,6 +126,7 @@ export interface MultiplayerCallbacks {
   onMobUpdate?: (mob: MultiplayerMob) => void;
   onPveBegin?: (event: MultiplayerPveBegin) => void;
   onPveResult?: (event: MultiplayerPveResult) => void;
+  onPveState?: (event: MultiplayerPveState) => void;
   onPveError?: (event: MultiplayerPveError) => void;
 }
 
@@ -131,6 +141,12 @@ export interface MultiplayerConnection {
   updateAuthToken(accessToken: string): void;
   sendPvpAttack(targetSessionId: string): void;
   sendPveBegin(spawnId: string): void;
+  sendPveAction(payload: {
+    battleId: string;
+    action: 'attack' | 'skill' | 'item' | 'defend' | 'flee' | 'transform';
+    skillId?: string;
+    itemId?: string;
+  }): void;
   sendPveComplete(payload: {
     battleId: string;
     outcome: 'win' | 'fled' | 'lose';
@@ -246,6 +262,11 @@ export async function connectMultiplayer(options: {
     options.callbacks?.onPveResult?.(event);
   });
 
+  room.onMessage('pve_state', (event: MultiplayerPveState) => {
+    if (!event) return;
+    options.callbacks?.onPveState?.(event);
+  });
+
   room.onMessage('pve_error', (event: MultiplayerPveError) => {
     if (!event) return;
     options.callbacks?.onPveError?.(event);
@@ -294,6 +315,11 @@ export async function connectMultiplayer(options: {
       const id = spawnId.trim();
       if (!id) return;
       room.send('pve_begin', { spawnId: id });
+    },
+
+    sendPveAction(payload) {
+      if (!payload?.battleId || !payload.action) return;
+      room.send('pve_action', payload);
     },
 
     sendPveComplete(payload) {
