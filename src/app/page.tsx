@@ -91,6 +91,7 @@ export default function Home() {
     COLYSEUS_URL ? 'offline' : 'disabled',
   );
   const [multiplayerMessage, setMultiplayerMessage] = useState('');
+  const [multiplayerLatencyMs, setMultiplayerLatencyMs] = useState<number | null>(null);
   const [multiplayerRetry, setMultiplayerRetry] = useState(0);
   const [touchControls, setTouchControls] = useState(false);
   const [stickPosition, setStickPosition] = useState({ x: 0, y: 0 });
@@ -394,6 +395,7 @@ export default function Home() {
           if (cancelled) return;
           setMultiplayerStatus(status);
           setMultiplayerMessage(message || '');
+          if (status !== 'online') setMultiplayerLatencyMs(null);
           game.setMultiplayerActive(status === 'online');
           if (status === 'offline' || status === 'error') scheduleReconnect();
         },
@@ -408,8 +410,11 @@ export default function Home() {
         },
         onMoveAck(event) {
           if (!cancelled) {
-            game.reconcileServerPosition(event.x, event.y, event.dir);
+            game.reconcileServerPosition(event.x, event.y, event.dir, event.seq);
           }
+        },
+        onLatency(rttMs) {
+          if (!cancelled) setMultiplayerLatencyMs(rttMs);
         },
         onPlayerLeft(sessionId) {
           if (!cancelled) game.removeRemotePlayer(sessionId);
@@ -518,6 +523,7 @@ export default function Home() {
         setMultiplayerMessage('');
 
         sequence += 1;
+        game.noteNetworkMove(sequence, game.px, game.py, game.pdir);
         connection.sendMove(game.px, game.py, game.pdir, sequence);
         lastSent = { x: game.px, y: game.py, dir: game.pdir, at: Date.now() };
 
@@ -540,12 +546,18 @@ export default function Home() {
           if (!activeGame || !activeConnection || activeGame.state !== 'world') return;
 
           const now = Date.now();
-          const moved = Math.hypot(activeGame.px - lastSent.x, activeGame.py - lastSent.y) > 0.3;
+          const moved = Math.hypot(activeGame.px - lastSent.x, activeGame.py - lastSent.y) > 0.2;
           const directionChanged = activeGame.pdir !== lastSent.dir;
-          const heartbeat = now - lastSent.at >= 1000;
+          const heartbeat = now - lastSent.at >= 750;
           if (!moved && !directionChanged && !heartbeat) return;
 
           sequence += 1;
+          activeGame.noteNetworkMove(
+            sequence,
+            activeGame.px,
+            activeGame.py,
+            activeGame.pdir,
+          );
           activeConnection.sendMove(
             activeGame.px,
             activeGame.py,
@@ -553,7 +565,7 @@ export default function Home() {
             sequence,
           );
           lastSent = { x: activeGame.px, y: activeGame.py, dir: activeGame.pdir, at: now };
-        }, 100);
+        }, 50);
       })
       .catch((error) => {
         if (cancelled) return;
@@ -984,14 +996,18 @@ export default function Home() {
             fontSize: 6,
             color:
               multiplayerStatus === 'online'
-                ? '#88f0a0'
+                ? multiplayerLatencyMs !== null && multiplayerLatencyMs >= 260
+                  ? '#f08888'
+                  : multiplayerLatencyMs !== null && multiplayerLatencyMs >= 160
+                    ? '#f8d030'
+                    : '#88f0a0'
                 : multiplayerStatus === 'connecting'
                   ? '#f8d030'
                   : '#788098',
           }}
         >
           {multiplayerStatus === 'online'
-            ? 'MUNDO ONLINE'
+            ? `MUNDO ONLINE${multiplayerLatencyMs !== null ? ` · ${multiplayerLatencyMs}ms` : ''}`
             : multiplayerStatus === 'connecting'
               ? 'CONECTANDO...'
               : multiplayerStatus === 'error'
