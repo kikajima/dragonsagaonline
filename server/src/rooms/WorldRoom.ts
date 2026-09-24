@@ -754,6 +754,7 @@ export class WorldRoom extends Room {
       if (!player || this.encounters.has(client.sessionId)) return;
 
       await this.waitForRewards(client.sessionId, client);
+      if (this.encounters.has(client.sessionId)) return;
 
       const action = payload?.action;
       const arg = String(payload?.arg || "");
