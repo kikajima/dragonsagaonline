@@ -349,7 +349,16 @@ export class Game {
     existing.respawnT = mob.respawnAt > 0 ? Math.max(0, (mob.respawnAt - Date.now()) / 1000) : 0;
   }
 
-  receivePveBegin(event: { battleId: string; spawnId: string; enemyId: string; isBoss: boolean }) {
+  receivePveBegin(event: {
+    battleId: string;
+    spawnId: string;
+    enemyId: string;
+    isBoss: boolean;
+    playerHp: number;
+    playerKi: number;
+    enemyHp: number;
+    enemyMaxHp: number;
+  }) {
     if (!event?.battleId || this.state !== 'world') return;
     this.pendingPveSpawnId = '';
     this.activePveBattleId = event.battleId;
@@ -358,6 +367,13 @@ export class Game {
     const spawn = this.spawns.find((item) => item.spawnId === event.spawnId) || null;
     this.activeBoss = event.isBoss ? spawn : null;
     this.startBattle([event.enemyId], event.isBoss);
+    this.battle?.syncAuthoritativeState({
+      playerHp: event.playerHp,
+      playerKi: event.playerKi,
+      enemyHp: event.enemyHp,
+      enemyMaxHp: event.enemyMaxHp,
+      outcome: 'active',
+    });
   }
 
   receivePveState(event: {
