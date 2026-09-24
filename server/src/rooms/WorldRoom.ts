@@ -1347,10 +1347,8 @@ export class WorldRoom extends Room {
       const requestedOutcome = payload?.outcome;
 
       if (requestedOutcome === "win" && encounter.outcome !== "win") {
-        const remainingRatio = encounter.enemyHp / Math.max(1, encounter.enemyMaxHp);
         const plausibleLegacyWin =
-          encounter.maxPotentialDamage >= encounter.enemyMaxHp &&
-          remainingRatio <= 0.35;
+          encounter.maxPotentialDamage >= encounter.enemyMaxHp;
 
         if (plausibleLegacyWin) {
           encounter.enemyHp = 0;
