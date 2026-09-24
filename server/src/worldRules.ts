@@ -332,6 +332,45 @@ export function canUseSkill(
   return false;
 }
 
+export interface ItemRule {
+  id: string;
+  price: number;
+  kind: "heal" | "kiheal" | "fullheal" | "gear";
+  power?: number;
+}
+
+export const ITEM_RULES: Record<string, ItemRule> = {
+  sensu: { id: "sensu", price: 50, kind: "heal", power: 100 },
+  capsula: { id: "capsula", price: 80, kind: "kiheal", power: 60 },
+  elixir: { id: "elixir", price: 500, kind: "fullheal" },
+  bastao: { id: "bastao", price: 600, kind: "gear" },
+  armadura: { id: "armadura", price: 600, kind: "gear" },
+  scouter: { id: "scouter", price: 300, kind: "gear" },
+  espada: { id: "espada", price: 4000, kind: "gear" },
+  manto: { id: "manto", price: 3500, kind: "gear" },
+};
+
+export const SHOP_POSITION = { x: 32 * TILE_SIZE + 16, y: 31 * TILE_SIZE + 16 };
+export const QUEST_MASTER_POSITION = { x: 92 * TILE_SIZE + 16, y: 74 * TILE_SIZE + 16 };
+
+export const DRAGON_BALL_SPOTS = [
+  { key: "13,28", x: 13 * TILE_SIZE + 8, y: 28 * TILE_SIZE + 8 },
+  { key: "30,22", x: 30 * TILE_SIZE + 8, y: 22 * TILE_SIZE + 8 },
+  { key: "25,55", x: 25 * TILE_SIZE + 8, y: 55 * TILE_SIZE + 8 },
+  { key: "47,50", x: 47 * TILE_SIZE + 8, y: 50 * TILE_SIZE + 8 },
+  { key: "58,28", x: 58 * TILE_SIZE + 8, y: 28 * TILE_SIZE + 8 },
+  { key: "90,75", x: 90 * TILE_SIZE + 8, y: 75 * TILE_SIZE + 8 },
+  { key: "40,16", x: 40 * TILE_SIZE + 8, y: 16 * TILE_SIZE + 8 },
+] as const;
+
+export const QUEST_TARGETS: Record<number, { enemyId: string; count: number }> = {
+  1: { enemyId: "saiba", count: 3 },
+  2: { enemyId: "soldado", count: 3 },
+  3: { enemyId: "radix", count: 1 },
+  4: { enemyId: "nappos", count: 1 },
+  5: { enemyId: "vegar", count: 1 },
+};
+
 const GEAR_RULES: Record<string, { atk?: number; def?: number }> = {
   bastao: { atk: 12 },
   armadura: { def: 10 },
