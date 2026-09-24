@@ -818,28 +818,36 @@ export class WorldRoom extends Room {
       }
 
       if (requestedOutcome !== "win") {
+        if (encounter.outcome !== "lose" && encounter.outcome !== "fled") {
+          client.send("pve_error", { message: "O servidor ainda não confirmou o fim da batalha." });
+          return;
+        }
+
+        const outcome = encounter.outcome;
         this.encounters.delete(client.sessionId);
         mob.engagedBy = null;
         mob.engagedUntil = 0;
 
-        const outcome =
-          encounter.outcome === "lose" ? "lose" :
-          encounter.outcome === "fled" ? "fled" :
-          requestedOutcome;
+        const character = await this.runCharacterAction(
+          client,
+          player,
+          "battle_finish",
+          {
+            outcome,
+            items: player.items,
+            hp: Math.max(1, encounter.playerHp),
+            ki: Math.max(0, encounter.playerKi),
+          },
+        );
 
-        if (outcome === "lose") {
-          player.combatHp = Math.max(1, Math.floor(player.maxHp / 2));
-          player.combatKi = Math.max(0, Math.floor(player.maxKi / 2));
-        } else {
-          player.combatHp = Math.max(1, encounter.playerHp);
-          player.combatKi = Math.max(0, encounter.playerKi);
-        }
+        if (!character) return;
 
         client.send("pve_result", {
           outcome,
           battleId: encounter.battleId,
           hp: player.combatHp,
           ki: player.combatKi,
+          character,
         });
         return;
       }
@@ -863,21 +871,7 @@ export class WorldRoom extends Room {
         mob.engagedBy = null;
         mob.engagedUntil = 0;
 
-        player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
-        player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, hp)));
-        player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, ki)));
-        const state = character.state || {};
-        const stats = computeCharacterStats({
-          classId: player.classId,
-          level: player.level,
-          baseAtk: numberFrom(state.baseAtk, 0),
-          baseDef: numberFrom(state.baseDef, 0),
-          gearOwned: stringArray(state.gearOwned),
-        });
-        player.attack = stats.attack;
-        player.defense = stats.defense;
-        player.pvpMaxHp = stats.maxHp;
-        player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
+        this.syncPlayerFromSnapshot(player, character);
 
         mob.dead = true;
         mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
@@ -954,14 +948,17 @@ export class WorldRoom extends Room {
 
   onJoin(client: Client, _options: unknown, auth: AuthData) {
     const character = auth.character;
-    const state = character.state || {};
     const level = Math.max(1, Math.floor(numberFrom(character.level, 1)));
+    const baseAtk = Math.max(0, Math.floor(numberFrom(character.base_atk, 0)));
+    const baseDef = Math.max(0, Math.floor(numberFrom(character.base_def, 0)));
+    const gearOwned = stringArray(character.gear_owned);
+    const flags = objectRecord(character.flags);
     const stats = computeCharacterStats({
       classId: character.class_id,
       level,
-      baseAtk: numberFrom(state.baseAtk, 0),
-      baseDef: numberFrom(state.baseDef, 0),
-      gearOwned: stringArray(state.gearOwned),
+      baseAtk,
+      baseDef,
+      gearOwned,
     });
     const player: OnlinePlayer = {
       sessionId: client.sessionId,
@@ -974,15 +971,23 @@ export class WorldRoom extends Room {
       y: Number.isFinite(character.y) && canWalk(character.x, character.y) ? character.y : 43.5 * 16,
       dir: "down",
       level,
+      gold: Math.max(0, Math.floor(numberFrom(character.gold, 0))),
+      baseAtk,
+      baseDef,
+      gearOwned,
+      dragonBalls: stringArray(character.dragon_balls),
+      questIndex: Math.max(0, Math.floor(numberFrom(character.quest_index, 0))),
+      questProgress: Math.max(0, Math.floor(numberFrom(character.quest_progress, 0))),
+      sagaCycle: Math.max(1, Math.floor(numberFrom(character.saga_cycle, 1))),
       attack: stats.attack,
       defense: stats.defense,
       maxHp: stats.maxHp,
       maxKi: stats.maxKi,
       combatHp: Math.max(1, Math.min(stats.maxHp, Math.floor(numberFrom(character.hp, stats.maxHp)))),
       combatKi: Math.max(0, Math.min(stats.maxKi, Math.floor(numberFrom(character.ki, stats.maxKi)))),
-      flags: objectRecord(state.flags),
-      items: numberRecord(state.items),
-      canSuper: Boolean(objectRecord(state.flags).super) || level >= 12,
+      flags,
+      items: numberRecord(character.items),
+      canSuper: Boolean(flags.super) || level >= 12,
       pvpHp: stats.maxHp,
       pvpMaxHp: stats.maxHp,
       koUntil: 0,
@@ -993,6 +998,24 @@ export class WorldRoom extends Room {
     this.players.set(client.sessionId, player);
     client.send("snapshot", Array.from(this.players.values(), publicPlayer));
     client.send("mob_snapshot", Array.from(this.mobs.values(), publicMob));
+    client.send("character_sync", {
+      id: character.id,
+      level: character.level,
+      xp: character.xp,
+      gold: character.gold,
+      hp: character.hp,
+      ki: character.ki,
+      base_atk: character.base_atk,
+      base_def: character.base_def,
+      items: character.items,
+      gear_owned: character.gear_owned,
+      dragon_balls: character.dragon_balls,
+      flags: character.flags,
+      quest_index: character.quest_index,
+      quest_progress: character.quest_progress,
+      saga_cycle: character.saga_cycle,
+      action: "initial",
+    });
     this.broadcast("player_joined", publicPlayer(player), { except: client });
     this.broadcast("presence", { count: this.players.size });
   }
