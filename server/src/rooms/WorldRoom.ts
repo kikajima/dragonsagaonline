@@ -7,6 +7,7 @@ import {
   canWalk,
   computeCharacterStats,
   isPvpSafeZone,
+  scaleEnemyForSaga,
   type Direction,
 } from "../worldRules.js";
 
@@ -42,6 +43,7 @@ interface OnlinePlayer {
   y: number;
   dir: Direction;
   level: number;
+  sagaCycle: number;
   attack: number;
   defense: number;
   maxHp: number;
@@ -86,6 +88,13 @@ interface ActiveEncounter {
   playerKi: number;
   enemyHp: number;
   enemyMaxHp: number;
+  enemyAttack: number;
+  enemyDefense: number;
+  rewardExp: number;
+  rewardZeni: number;
+  sagaCycle: number;
+  difficultyMultiplier: number;
+  rewardMultiplier: number;
   buffed: boolean;
   transformed: boolean;
   defending: boolean;
@@ -373,6 +382,7 @@ async function applyVitalCheckpoint(
 function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapshot) {
   const state = character.state || {};
   player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
+  player.sagaCycle = Math.max(0, Math.floor(numberFrom(state.sagaCycle, player.sagaCycle)));
   player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, player.combatHp)));
   player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, player.combatKi)));
   player.flags = objectRecord(state.flags);
@@ -875,6 +885,7 @@ export class WorldRoom extends Room {
       const battleId = crypto.randomUUID();
       mob.engagedBy = client.sessionId;
       mob.engagedUntil = now + PVE_LOCK_MS;
+      const scaledEnemy = scaleEnemyForSaga(enemy, player.sagaCycle);
 
       const encounter: ActiveEncounter = {
         battleId,
@@ -883,8 +894,15 @@ export class WorldRoom extends Room {
         startedAt: now,
         playerHp: Math.max(1, Math.min(player.maxHp, player.combatHp)),
         playerKi: Math.max(0, Math.min(player.maxKi, player.combatKi)),
-        enemyHp: enemy.hp,
-        enemyMaxHp: enemy.hp,
+        enemyHp: scaledEnemy.hp,
+        enemyMaxHp: scaledEnemy.hp,
+        enemyAttack: scaledEnemy.atk,
+        enemyDefense: scaledEnemy.def,
+        rewardExp: scaledEnemy.exp,
+        rewardZeni: scaledEnemy.zeni,
+        sagaCycle: scaledEnemy.sagaCycle,
+        difficultyMultiplier: scaledEnemy.difficultyMultiplier,
+        rewardMultiplier: scaledEnemy.rewardMultiplier,
         buffed: false,
         transformed: false,
         defending: false,
@@ -902,6 +920,9 @@ export class WorldRoom extends Room {
         playerKi: encounter.playerKi,
         enemyHp: encounter.enemyHp,
         enemyMaxHp: encounter.enemyMaxHp,
+        sagaCycle: encounter.sagaCycle,
+        difficultyMultiplier: encounter.difficultyMultiplier,
+        rewardMultiplier: encounter.rewardMultiplier,
       });
     },
 
@@ -929,7 +950,7 @@ export class WorldRoom extends Room {
       if (action === "attack") {
         encounter.enemyHp = Math.max(
           0,
-          encounter.enemyHp - combatDamage(effectiveAttack, enemy.def),
+          encounter.enemyHp - combatDamage(effectiveAttack, encounter.enemyDefense),
         );
         acted = true;
       } else if (action === "skill") {
@@ -953,7 +974,7 @@ export class WorldRoom extends Room {
             for (let i = 0; i < hits; i++) {
               encounter.enemyHp = Math.max(
                 0,
-                encounter.enemyHp - combatDamage(effectiveAttack, enemy.def, skill.power),
+                encounter.enemyHp - combatDamage(effectiveAttack, encounter.enemyDefense, skill.power),
               );
             }
           }
@@ -1023,7 +1044,7 @@ export class WorldRoom extends Room {
         encounter.outcome = "win";
       } else if (encounter.outcome === "active") {
         const enemyDamage = combatDamage(
-          enemy.atk,
+          encounter.enemyAttack,
           player.defense,
           1,
           encounter.defending,
@@ -1119,8 +1140,8 @@ export class WorldRoom extends Room {
         const character = await applyAuthoritativeReward(
           player,
           enemy.id,
-          enemy.exp,
-          enemy.zeni,
+          encounter.rewardExp,
+          encounter.rewardZeni,
           drop,
           hp,
           ki,
@@ -1143,8 +1164,11 @@ export class WorldRoom extends Room {
           battleId: encounter.battleId,
           spawnId: mob.spawnId,
           enemyId: mob.enemyId,
-          exp: enemy.exp,
-          zeni: enemy.zeni,
+          exp: encounter.rewardExp,
+          zeni: encounter.rewardZeni,
+          sagaCycle: encounter.sagaCycle,
+          difficultyMultiplier: encounter.difficultyMultiplier,
+          rewardMultiplier: encounter.rewardMultiplier,
           drop,
           character,
         });
@@ -1248,6 +1272,7 @@ export class WorldRoom extends Room {
       y: Number.isFinite(character.y) && canWalk(character.x, character.y) ? character.y : 43.5 * 16,
       dir: "down",
       level,
+      sagaCycle: Math.max(0, Math.floor(numberFrom(state.sagaCycle, 0))),
       attack: stats.attack,
       defense: stats.defense,
       maxHp: stats.maxHp,
