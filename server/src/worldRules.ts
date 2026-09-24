@@ -246,6 +246,7 @@ export function canWalk(x: number, y: number): boolean {
 
 interface ClassRule {
   hp: number;
+  skills: string[];
   ki: number;
   atk: number;
   def: number;
@@ -262,6 +263,7 @@ interface ClassRule {
 const CLASS_RULES: Record<string, ClassRule> = {
   saiya: {
     hp: 120,
+    skills: ["onda", "punho", "meteoro"],
     ki: 40,
     atk: 22,
     def: 14,
@@ -270,6 +272,7 @@ const CLASS_RULES: Record<string, ClassRule> = {
   },
   humano: {
     hp: 100,
+    skills: ["onda", "punho", "grito"],
     ki: 45,
     atk: 18,
     def: 12,
@@ -278,6 +281,7 @@ const CLASS_RULES: Record<string, ClassRule> = {
   },
   nameko: {
     hp: 110,
+    skills: ["onda", "regen", "meteoro"],
     ki: 55,
     atk: 17,
     def: 17,
@@ -286,6 +290,7 @@ const CLASS_RULES: Record<string, ClassRule> = {
   },
   lutadora: {
     hp: 95,
+    skills: ["onda", "vento", "meteoro"],
     ki: 50,
     atk: 19,
     def: 11,
@@ -293,6 +298,39 @@ const CLASS_RULES: Record<string, ClassRule> = {
     growth: { hp: 13, ki: 9, atk: 3.0, def: 1.8, spd: 2.0 },
   },
 };
+
+export interface SkillRule {
+  id: string;
+  cost: number;
+  kind: "dmg" | "dmgall" | "heal" | "multi" | "buff";
+  power: number;
+  level: number;
+}
+
+export const SKILL_RULES: Record<string, SkillRule> = {
+  onda: { id: "onda", cost: 12, kind: "dmg", power: 1.4, level: 1 },
+  meteoro: { id: "meteoro", cost: 30, kind: "dmg", power: 2.6, level: 8 },
+  punho: { id: "punho", cost: 15, kind: "multi", power: 0.75, level: 4 },
+  regen: { id: "regen", cost: 20, kind: "heal", power: 1.2, level: 3 },
+  vento: { id: "vento", cost: 25, kind: "dmgall", power: 1.1, level: 6 },
+  grito: { id: "grito", cost: 18, kind: "buff", power: 1.3, level: 5 },
+};
+
+export function canUseSkill(
+  classId: string,
+  level: number,
+  skillId: string,
+  companionFlags: Record<string, unknown> = {},
+): boolean {
+  const cls = CLASS_RULES[classId] ?? CLASS_RULES.saiya!;
+  const rule = SKILL_RULES[skillId];
+  if (!rule || level < rule.level) return false;
+  if (cls.skills.includes(skillId)) return true;
+
+  if (companionFlags.kurin && ["onda", "punho"].includes(skillId)) return true;
+  if (companionFlags.nailo && ["onda", "regen"].includes(skillId)) return true;
+  return false;
+}
 
 const GEAR_RULES: Record<string, { atk?: number; def?: number }> = {
   bastao: { atk: 12 },
