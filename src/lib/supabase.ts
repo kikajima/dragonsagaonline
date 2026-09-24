@@ -359,7 +359,6 @@ export async function updateCharacter(
     ...(typeof payload.map_id === 'string' ? { map_id: payload.map_id } : {}),
     ...(typeof payload.x === 'number' ? { x: payload.x } : {}),
     ...(typeof payload.y === 'number' ? { y: payload.y } : {}),
-    ...(payload.state ? { state: payload.state } : {}),
     ...(typeof payload.last_played_at === 'string'
       ? { last_played_at: payload.last_played_at }
       : {}),
