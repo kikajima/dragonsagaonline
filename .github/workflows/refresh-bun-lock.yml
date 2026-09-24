@@ -1,0 +1,36 @@
+name: Refresh Bun lockfile
+
+on:
+  push:
+    branches:
+      - authoritative-world-hardening
+    paths:
+      - package.json
+      - .github/workflows/refresh-bun-lock.yml
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: authoritative-world-hardening
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Refresh lockfile
+        run: bun install --lockfile-only
+      - name: Commit lockfile
+        run: |
+          if git diff --quiet -- bun.lock; then
+            echo "Lockfile already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bun.lock
+          git commit -m "Update frontend dependency lock"
+          git push origin HEAD:authoritative-world-hardening
