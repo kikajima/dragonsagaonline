@@ -96,6 +96,21 @@ export interface MultiplayerPveError {
   message: string;
 }
 
+export interface MultiplayerPveVictoryConfirmed {
+  battleId: string;
+  spawnId: string;
+  enemyId: string;
+}
+
+export interface MultiplayerPveRewardError {
+  battleId: string;
+  message: string;
+}
+
+export interface MultiplayerWorldActionPending {
+  message: string;
+}
+
 export interface MultiplayerWorldActionCharacter {
   id: string;
   level: number;
@@ -204,6 +219,9 @@ export interface MultiplayerCallbacks {
   onPveResult?: (event: MultiplayerPveResult) => void;
   onPveState?: (event: MultiplayerPveState) => void;
   onPveError?: (event: MultiplayerPveError) => void;
+  onPveVictoryConfirmed?: (event: MultiplayerPveVictoryConfirmed) => void;
+  onPveRewardError?: (event: MultiplayerPveRewardError) => void;
+  onWorldActionPending?: (event: MultiplayerWorldActionPending) => void;
   onWorldActionResult?: (event: MultiplayerWorldActionResult) => void;
   onWorldActionError?: (event: MultiplayerWorldActionError) => void;
   onTradeOpen?: (event: MultiplayerTradeOpen) => void;
@@ -389,6 +407,21 @@ export async function connectMultiplayer(options: {
   room.onMessage('pve_error', (event: MultiplayerPveError) => {
     if (!event) return;
     options.callbacks?.onPveError?.(event);
+  });
+
+  room.onMessage('pve_victory_confirmed', (event: MultiplayerPveVictoryConfirmed) => {
+    if (!event) return;
+    options.callbacks?.onPveVictoryConfirmed?.(event);
+  });
+
+  room.onMessage('pve_reward_error', (event: MultiplayerPveRewardError) => {
+    if (!event) return;
+    options.callbacks?.onPveRewardError?.(event);
+  });
+
+  room.onMessage('world_action_pending', (event: MultiplayerWorldActionPending) => {
+    if (!event) return;
+    options.callbacks?.onWorldActionPending?.(event);
   });
 
   room.onMessage('world_action_result', (event: MultiplayerWorldActionResult) => {
