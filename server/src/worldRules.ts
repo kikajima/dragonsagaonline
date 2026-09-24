@@ -478,6 +478,34 @@ export const ENEMY_RULES: Record<string, EnemyRule> = {
   },
 };
 
+export interface SagaScaledEnemy extends EnemyRule {
+  sagaCycle: number;
+  difficultyMultiplier: number;
+  rewardMultiplier: number;
+}
+
+export function scaleEnemyForSaga(enemy: EnemyRule, sagaCycle: number): SagaScaledEnemy {
+  const cycle = Math.max(0, Math.min(100, Math.floor(Number(sagaCycle) || 0)));
+  const boss = Boolean(enemy.boss);
+
+  const hpMultiplier = 1 + cycle * (boss ? 0.25 : 0.18);
+  const attackMultiplier = 1 + cycle * (boss ? 0.15 : 0.12);
+  const defenseMultiplier = 1 + cycle * (boss ? 0.12 : 0.10);
+  const rewardMultiplier = 1 + cycle * 0.20;
+
+  return {
+    ...enemy,
+    sagaCycle: cycle,
+    difficultyMultiplier: hpMultiplier,
+    rewardMultiplier,
+    hp: Math.max(1, Math.round(enemy.hp * hpMultiplier)),
+    atk: Math.max(1, Math.round(enemy.atk * attackMultiplier)),
+    def: Math.max(0, Math.round(enemy.def * defenseMultiplier)),
+    exp: Math.max(1, Math.round(enemy.exp * rewardMultiplier)),
+    zeni: Math.max(0, Math.round(enemy.zeni * rewardMultiplier)),
+  };
+}
+
 export interface MobSpawnDefinition {
   spawnId: string;
   enemyId: string;
