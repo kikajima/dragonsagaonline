@@ -1,6 +1,12 @@
 'use client';
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  useCallback,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { Game, VW, VH, type PlayerState } from '@/game/game';
 import { chip } from '@/game/audio';
 import {
@@ -81,11 +87,16 @@ export default function Home() {
     COLYSEUS_URL ? 'offline' : 'disabled',
   );
   const [multiplayerMessage, setMultiplayerMessage] = useState('');
+  const [touchControls, setTouchControls] = useState(false);
+  const [stickPosition, setStickPosition] = useState({ x: 0, y: 0 });
 
   const sessionRef = useRef<DsoSession | null>(null);
   const characterRef = useRef<CharacterRow | null>(null);
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const multiplayerRef = useRef<MultiplayerConnection | null>(null);
+  const joystickRef = useRef<HTMLDivElement | null>(null);
+  const joystickPointerRef = useRef<number | null>(null);
+  const joystickDirectionRef = useRef<string | null>(null);
 
   const loadAccount = useCallback(async (nextSession: DsoSession) => {
     sessionRef.current = nextSession;
@@ -152,6 +163,22 @@ export default function Home() {
       cancelled = true;
     };
   }, [loadAccount]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const coarsePointer = window.matchMedia('(pointer: coarse)');
+    const update = () => {
+      setTouchControls(navigator.maxTouchPoints > 0 || coarsePointer.matches);
+    };
+
+    update();
+    coarsePointer.addEventListener?.('change', update);
+
+    return () => {
+      coarsePointer.removeEventListener?.('change', update);
+    };
+  }, []);
 
   const handleAuthSubmit = useCallback(async () => {
     const email = authEmail.trim().toLowerCase();
@@ -261,19 +288,6 @@ export default function Home() {
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
 
-    const onTouchStart = (e: TouchEvent) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const rect = canvas.getBoundingClientRect();
-      const t = e.touches[0];
-      const x = ((t.clientX - rect.left) / rect.width) * VW;
-      const y = ((t.clientY - rect.top) / rect.height) * VH;
-      game.touchStart(x, y);
-    };
-    const onTouchEnd = () => game.touchEnd();
-    canvasRef.current?.addEventListener('touchstart', onTouchStart as EventListener, { passive: true });
-    window.addEventListener('touchend', onTouchEnd);
-
     // Auto-enable audio on first interaction
     const unlock = () => chip.resume();
     window.addEventListener('pointerdown', unlock, { once: true });
@@ -282,8 +296,6 @@ export default function Home() {
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('touchend', onTouchEnd);
-      canvasRef.current?.removeEventListener('touchstart', onTouchStart as EventListener);
     };
   }, [authReady, session?.user.id, persistPlayer]);
 
@@ -415,6 +427,111 @@ export default function Home() {
     if (!g) return;
     g.confirmName(nameVal);
   }, [nameVal]);
+
+  const updateVirtualJoystick = useCallback((clientX: number, clientY: number) => {
+    const base = joystickRef.current;
+    const game = gameRef.current;
+    if (!base || !game) return;
+
+    const rect = base.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const maxTravel = Math.max(24, rect.width * 0.31);
+    let dx = clientX - centerX;
+    let dy = clientY - centerY;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance > maxTravel) {
+      const scale = maxTravel / distance;
+      dx *= scale;
+      dy *= scale;
+    }
+
+    setStickPosition({ x: dx, y: dy });
+
+    const nx = dx / maxTravel;
+    const ny = dy / maxTravel;
+    const magnitude = Math.hypot(nx, ny);
+    const freeMovement =
+      game.state === 'world' &&
+      !game.dialog &&
+      !game.shop &&
+      !game.menuOpen &&
+      !showName &&
+      !showChat;
+
+    if (freeMovement) {
+      game.setTouchVector(nx, ny);
+      joystickDirectionRef.current = null;
+      return;
+    }
+
+    game.clearTouchVector();
+
+    let direction: string | null = null;
+    if (magnitude > 0.45) {
+      if (Math.abs(nx) >= Math.abs(ny)) {
+        direction = nx < 0 ? 'ArrowLeft' : 'ArrowRight';
+      } else {
+        direction = ny < 0 ? 'ArrowUp' : 'ArrowDown';
+      }
+    }
+
+    if (direction && direction !== joystickDirectionRef.current) {
+      game.touchKey(direction);
+    }
+    joystickDirectionRef.current = direction;
+  }, [showChat, showName]);
+
+  const startVirtualJoystick = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    joystickPointerRef.current = event.pointerId;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    updateVirtualJoystick(event.clientX, event.clientY);
+  }, [updateVirtualJoystick]);
+
+  const moveVirtualJoystick = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (joystickPointerRef.current !== event.pointerId) return;
+    event.preventDefault();
+    updateVirtualJoystick(event.clientX, event.clientY);
+  }, [updateVirtualJoystick]);
+
+  const stopVirtualJoystick = useCallback((event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (
+      event &&
+      joystickPointerRef.current !== null &&
+      joystickPointerRef.current !== event.pointerId
+    ) {
+      return;
+    }
+
+    joystickPointerRef.current = null;
+    joystickDirectionRef.current = null;
+    setStickPosition({ x: 0, y: 0 });
+    gameRef.current?.clearTouchVector();
+  }, []);
+
+  const touchAction = useCallback((key: string) => {
+    gameRef.current?.touchKey(key);
+  }, []);
+
+  const openTouchChat = useCallback(() => {
+    const game = gameRef.current;
+    if (
+      !game ||
+      game.state !== 'world' ||
+      game.dialog ||
+      game.shop ||
+      game.menuOpen
+    ) {
+      return;
+    }
+
+    game.clearTouchVector();
+    setStickPosition({ x: 0, y: 0 });
+    setShowChat(true);
+    setTimeout(() => chatInputRef.current?.focus(), 30);
+  }, []);
 
   if (!authReady) {
     return (
@@ -585,7 +702,12 @@ export default function Home() {
       </div>
       <div
         className="relative w-full"
-        style={{ maxWidth: VW, aspectRatio: `${VW}/${VH}` }}
+        style={{
+          maxWidth: VW,
+          aspectRatio: `${VW}/${VH}`,
+          touchAction: 'none',
+          overscrollBehavior: 'contain',
+        }}
       >
         <canvas
           ref={canvasRef}
@@ -594,9 +716,138 @@ export default function Home() {
             imageRendering: 'pixelated',
             boxShadow: '0 0 0 3px #2a2a3a, 0 0 40px rgba(80,120,255,0.25), 0 0 120px rgba(0,0,0,0.8)',
             background: '#05070d',
+            touchAction: 'none',
           }}
           tabIndex={0}
         />
+
+        {touchControls && !showName && (
+          <div
+            className="absolute inset-0 z-20"
+            style={{
+              pointerEvents: 'none',
+              userSelect: 'none',
+              WebkitUserSelect: 'none',
+            }}
+          >
+            <div
+              ref={joystickRef}
+              onPointerDown={startVirtualJoystick}
+              onPointerMove={moveVirtualJoystick}
+              onPointerUp={stopVirtualJoystick}
+              onPointerCancel={stopVirtualJoystick}
+              onLostPointerCapture={stopVirtualJoystick}
+              aria-label="Joystick virtual"
+              className="absolute"
+              style={{
+                left: 'max(12px, env(safe-area-inset-left))',
+                bottom: 'max(14px, env(safe-area-inset-bottom))',
+                width: 'clamp(92px, 18vw, 124px)',
+                aspectRatio: '1',
+                borderRadius: '50%',
+                border: '2px solid rgba(232,224,200,0.72)',
+                background: 'rgba(16,24,48,0.56)',
+                boxShadow: 'inset 0 0 0 10px rgba(40,56,104,0.26), 0 4px 18px rgba(0,0,0,0.35)',
+                pointerEvents: 'auto',
+                touchAction: 'none',
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%',
+                  top: '50%',
+                  width: '42%',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  transform: `translate(calc(-50% + ${stickPosition.x}px), calc(-50% + ${stickPosition.y}px))`,
+                  border: '2px solid #f8d030',
+                  background: 'rgba(40,56,104,0.94)',
+                  boxShadow: '0 2px 10px rgba(0,0,0,0.5)',
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+
+            <div
+              className="absolute flex items-end gap-2"
+              style={{
+                right: 'max(12px, env(safe-area-inset-right))',
+                bottom: 'max(14px, env(safe-area-inset-bottom))',
+                pointerEvents: 'auto',
+                touchAction: 'none',
+              }}
+            >
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  openTouchChat();
+                }}
+                aria-label="Abrir chat"
+                style={{
+                  width: 'clamp(48px, 9vw, 64px)',
+                  height: 'clamp(34px, 6vw, 42px)',
+                  borderRadius: 8,
+                  border: '2px solid #88c8f8',
+                  background: 'rgba(16,24,48,0.84)',
+                  color: '#88c8f8',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(5px, 1.1vw, 7px)',
+                  touchAction: 'none',
+                }}
+              >
+                CHAT
+              </button>
+
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  touchAction('x');
+                }}
+                aria-label="Voltar ou abrir menu"
+                style={{
+                  width: 'clamp(54px, 11vw, 74px)',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  border: '2px solid #88c8f8',
+                  background: 'rgba(40,56,104,0.9)',
+                  color: '#fff',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(11px, 2.4vw, 16px)',
+                  boxShadow: '0 4px 14px rgba(0,0,0,0.4)',
+                  touchAction: 'none',
+                }}
+              >
+                B
+              </button>
+
+              <button
+                type="button"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  touchAction('z');
+                }}
+                aria-label="Confirmar ou interagir"
+                style={{
+                  width: 'clamp(62px, 13vw, 84px)',
+                  aspectRatio: '1',
+                  borderRadius: '50%',
+                  border: '3px solid #f8d030',
+                  background: 'rgba(248,208,48,0.9)',
+                  color: '#101828',
+                  fontFamily: '"Press Start 2P", monospace',
+                  fontSize: 'clamp(14px, 3vw, 20px)',
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.45)',
+                  touchAction: 'none',
+                }}
+              >
+                A
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Name input overlay (character creation) */}
         {showName && (
@@ -699,7 +950,9 @@ export default function Home() {
         className="mt-2 text-center"
         style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: '#5a6078', lineHeight: 1.8 }}
       >
-        WASD/SETAS mover · Z/ENTER falar & confirmar · X menu · ENTER abrir chat · M som
+        {touchControls
+          ? 'JOYSTICK mover/navegar · A confirmar/falar · B menu/voltar · CHAT conversar'
+          : 'WASD/SETAS mover · Z/ENTER falar & confirmar · X menu · ENTER abrir chat · M som'}
       </p>
     </main>
   );
