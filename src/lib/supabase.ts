@@ -249,6 +249,10 @@ export async function signOut() {
   saveSession(null);
 }
 
+export async function getValidSession(): Promise<DsoSession> {
+  return requireSession();
+}
+
 async function requireSession(): Promise<DsoSession> {
   const session = readStoredSession();
   if (!session) throw new Error('Você precisa entrar na sua conta.');
