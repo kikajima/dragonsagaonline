@@ -11,6 +11,7 @@ import { Game, VW, VH, type PlayerState } from '@/game/game';
 import { chip } from '@/game/audio';
 import {
   createCharacter,
+  getValidSession,
   listCharacters,
   restoreSession,
   signInWithPassword,
@@ -316,6 +317,7 @@ export default function Home() {
 
     let cancelled = false;
     let movementTimer: ReturnType<typeof setInterval> | null = null;
+    let authRefreshTimer: ReturnType<typeof setInterval> | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let sequence = 0;
     let lastSent = { x: Number.NaN, y: Number.NaN, dir: '' as string, at: 0 };
@@ -420,6 +422,19 @@ export default function Home() {
         connection.sendMove(game.px, game.py, game.pdir);
         lastSent = { x: game.px, y: game.py, dir: game.pdir, at: Date.now() };
 
+        authRefreshTimer = setInterval(() => {
+          void getValidSession()
+            .then((freshSession) => {
+              if (cancelled || multiplayerRef.current !== connection) return;
+              connection.updateAuthToken(freshSession.access_token);
+              sessionRef.current = freshSession;
+            })
+            .catch((error) => {
+              console.error('[colyseus] refresh auth', error);
+              scheduleReconnect();
+            });
+        }, 20 * 60 * 1000);
+
         movementTimer = setInterval(() => {
           const activeGame = gameRef.current;
           const activeConnection = multiplayerRef.current;
@@ -454,6 +469,7 @@ export default function Home() {
     return () => {
       cancelled = true;
       if (movementTimer) clearInterval(movementTimer);
+      if (authRefreshTimer) clearInterval(authRefreshTimer);
       if (reconnectTimer) clearTimeout(reconnectTimer);
 
       const connection = multiplayerRef.current;
