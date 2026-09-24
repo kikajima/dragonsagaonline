@@ -118,6 +118,12 @@ export interface MultiplayerCallbacks {
   onSnapshot?: (players: MultiplayerPlayer[]) => void;
   onPlayerJoined?: (player: MultiplayerPlayer) => void;
   onPlayerMoved?: (player: MultiplayerPlayer) => void;
+  onMoveAck?: (event: {
+    x: number;
+    y: number;
+    dir: 'down' | 'up' | 'left' | 'right';
+    seq: number;
+  }) => void;
   onPlayerLeft?: (sessionId: string) => void;
   onChat?: (message: MultiplayerChat) => void;
   onPresence?: (count: number) => void;
@@ -140,6 +146,7 @@ export interface MultiplayerConnection {
     x: number,
     y: number,
     dir: 'down' | 'up' | 'left' | 'right',
+    seq?: number,
   ): void;
   sendChat(text: string): void;
   updateAuthToken(accessToken: string): void;
@@ -208,6 +215,23 @@ export async function connectMultiplayer(options: {
   room.onMessage('player_move', (player: MultiplayerPlayer) => {
     if (player?.sessionId === ownSessionId) return;
     options.callbacks?.onPlayerMoved?.(player);
+  });
+
+  room.onMessage('move_ack', (event: {
+    x?: number;
+    y?: number;
+    dir?: 'down' | 'up' | 'left' | 'right';
+    seq?: number;
+  }) => {
+    const x = Number(event?.x);
+    const y = Number(event?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !event?.dir) return;
+    options.callbacks?.onMoveAck?.({
+      x,
+      y,
+      dir: event.dir,
+      seq: Number.isFinite(Number(event.seq)) ? Number(event.seq) : 0,
+    });
   });
 
   room.onMessage('player_left', (payload: { sessionId?: string }) => {
@@ -292,9 +316,9 @@ export async function connectMultiplayer(options: {
   return {
     sessionId: ownSessionId,
 
-    sendMove(x, y, dir) {
+    sendMove(x, y, dir, seq = 0) {
       if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-      room.send('move', { x, y, dir });
+      room.send('move', { x, y, dir, seq });
     },
 
     sendChat(text) {
