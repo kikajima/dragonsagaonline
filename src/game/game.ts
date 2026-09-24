@@ -21,6 +21,9 @@ export interface RemotePlayerNetworkState {
   x: number;
   y: number;
   dir: 'down' | 'up' | 'left' | 'right';
+  pvpHp: number;
+  pvpMaxHp: number;
+  pvpKo: boolean;
 }
 
 export interface PlayerState {
@@ -72,6 +75,7 @@ interface RemotePlayerView extends RemotePlayerNetworkState {
   moving: boolean;
   bubble: string | null;
   bubbleT: number;
+  hitT: number;
 }
 
 interface Spawn {
@@ -81,6 +85,8 @@ interface Spawn {
   wait: number;
   dead: boolean;
   respawnT: number;
+  spawnX?: number;
+  spawnY?: number;
   isBoss?: boolean;
   animT: number;
 }
@@ -102,6 +108,12 @@ export class Game {
   fakes: FakePlayer[] = [];
   remotePlayers = new Map<string, RemotePlayerView>();
   multiplayerActive = false;
+  multiplayerSessionId = '';
+  pvpAttackHandler: ((targetSessionId: string) => void) | null = null;
+  pvpHp = 0;
+  pvpMaxHp = 0;
+  pvpKnockedOut = false;
+  pvpHitT = 0;
   spawns: Spawn[] = [];
   ballEnts: { key: string; x: number; y: number }[] = [];
   battle: Battle | null = null;
@@ -221,6 +233,10 @@ export class Game {
     this.spawns.push({ enemyId: 'radix', x: 40 * T16, y: 13 * T16, vx: 0, vy: 0, wait: 0, dead: false, respawnT: 0, isBoss: true, animT: 0 });
     this.spawns.push({ enemyId: 'nappos', x: 19 * T16, y: 16 * T16, vx: 0, vy: 0, wait: 0, dead: false, respawnT: 0, isBoss: true, animT: 0 });
     this.spawns.push({ enemyId: 'vegar', x: 63 * T16, y: 30 * T16, vx: 0, vy: 0, wait: 0, dead: false, respawnT: 0, isBoss: true, animT: 0 });
+    for (const spawn of this.spawns) {
+      spawn.spawnX = spawn.x;
+      spawn.spawnY = spawn.y;
+    }
     // Dragon balls
     this.refreshBalls();
   }
@@ -237,7 +253,86 @@ export class Game {
 
   setMultiplayerActive(active: boolean) {
     this.multiplayerActive = active;
-    if (!active) this.remotePlayers.clear();
+    if (!active) {
+      this.remotePlayers.clear();
+      this.multiplayerSessionId = '';
+      this.pvpHp = 0;
+      this.pvpMaxHp = 0;
+      this.pvpKnockedOut = false;
+    }
+  }
+
+  setMultiplayerSessionId(sessionId: string) {
+    this.multiplayerSessionId = sessionId;
+  }
+
+  setPvpAttackHandler(cb: ((targetSessionId: string) => void) | null) {
+    this.pvpAttackHandler = cb;
+  }
+
+  setPvpState(hp: number, maxHp: number, knockedOut = false) {
+    this.pvpMaxHp = Math.max(1, Math.floor(maxHp || 1));
+    this.pvpHp = Math.max(0, Math.min(this.pvpMaxHp, Math.floor(hp)));
+    this.pvpKnockedOut = knockedOut || this.pvpHp <= 0;
+  }
+
+  receivePvpHit(event: {
+    attackerSessionId: string;
+    targetSessionId: string;
+    attackerName: string;
+    targetName: string;
+    damage: number;
+    hp: number;
+    maxHp: number;
+  }) {
+    const remote = this.remotePlayers.get(event.targetSessionId);
+    if (remote) {
+      remote.pvpHp = event.hp;
+      remote.pvpMaxHp = event.maxHp;
+      remote.pvpKo = event.hp <= 0;
+      remote.hitT = 0.35;
+    }
+
+    if (event.targetSessionId === this.multiplayerSessionId) {
+      this.setPvpState(event.hp, event.maxHp, event.hp <= 0);
+      this.pvpHitT = 0.35;
+      this.toast = { text: `${event.attackerName} causou ${event.damage} de dano PvP!`, t: 1.3 };
+    } else if (event.attackerSessionId === this.multiplayerSessionId) {
+      this.toast = { text: `${event.damage} de dano em ${event.targetName}!`, t: 1.1 };
+    }
+  }
+
+  receivePvpKo(event: {
+    targetSessionId: string;
+    targetName: string;
+    attackerSessionId: string;
+    attackerName: string;
+  }) {
+    const remote = this.remotePlayers.get(event.targetSessionId);
+    if (remote) {
+      remote.pvpHp = 0;
+      remote.pvpKo = true;
+    }
+
+    if (event.targetSessionId === this.multiplayerSessionId) {
+      this.pvpKnockedOut = true;
+      this.pvpHp = 0;
+      this.clearTouchVector();
+      this.keys.clear();
+      this.addChat({ name: 'PvP', text: `${event.attackerName} derrotou você. Recuperando...`, color: '#f08888', sys: true });
+    } else if (event.attackerSessionId === this.multiplayerSessionId) {
+      this.addChat({ name: 'PvP', text: `Você derrotou ${event.targetName}!`, color: '#f8d030', sys: true });
+    }
+  }
+
+  receivePvpRespawn(player: RemotePlayerNetworkState) {
+    if (player.sessionId === this.multiplayerSessionId) {
+      this.setPvpState(player.pvpHp, player.pvpMaxHp, false);
+      this.toast = { text: 'Você se recuperou do PvP!', t: 1.5 };
+      return;
+    }
+
+    this.upsertRemotePlayer(player);
   }
 
   setRemoteSnapshot(players: RemotePlayerNetworkState[]) {
@@ -256,6 +351,9 @@ export class Game {
       existing.name = player.name;
       existing.classId = player.classId;
       existing.dir = player.dir;
+      existing.pvpHp = player.pvpHp;
+      existing.pvpMaxHp = player.pvpMaxHp;
+      existing.pvpKo = player.pvpKo;
       existing.moving = distance > 0.5;
       return;
     }
@@ -268,6 +366,7 @@ export class Game {
       moving: false,
       bubble: null,
       bubbleT: 0,
+      hitT: 0,
     });
   }
 
@@ -530,7 +629,13 @@ export class Game {
       else if (k('ArrowDown') || k('s')) { dy = 1; if (!dx) this.pdir = 'down'; }
     }
 
+    if (this.pvpKnockedOut) {
+      dx = 0;
+      dy = 0;
+    }
+
     this.pmoving = Math.hypot(dx, dy) > 0.08;
+    if (this.pvpHitT > 0) this.pvpHitT -= dt;
     if (this.pmoving) {
       const n = Math.hypot(dx, dy) || 1;
       const strength = usingTouchStick ? Math.min(1, n) : 1;
@@ -604,6 +709,7 @@ export class Game {
     // interpolate real multiplayer players between network updates
     for (const remote of this.remotePlayers.values()) {
       remote.animT += dt;
+      if (remote.hitT > 0) remote.hitT -= dt;
       if (remote.bubbleT > 0) {
         remote.bubbleT -= dt;
       } else {
@@ -632,7 +738,15 @@ export class Game {
       s.animT += dt;
       if (s.dead) {
         s.respawnT -= dt;
-        if (s.respawnT <= 0) { s.dead = false; s.x = s.vx || s.x; s.y = s.vy || s.y; }
+        if (s.respawnT <= 0) {
+          s.dead = false;
+          s.x = s.spawnX ?? s.x;
+          s.y = s.spawnY ?? s.y;
+          s.vx = 0;
+          s.vy = 0;
+          s.wait = 0.5 + Math.random() * 1.5;
+          s.animT = 0;
+        }
         continue;
       }
       if (!s.isBoss) {
@@ -698,9 +812,38 @@ export class Game {
     return null;
   }
 
+  facingRemotePlayer(): RemotePlayerView | null {
+    const [fx, fy] = DIRS[this.pdir];
+    const tx = this.px + fx * 26;
+    const ty = this.py + fy * 26;
+    let nearest: RemotePlayerView | null = null;
+    let nearestDistance = 38;
+
+    for (const remote of this.remotePlayers.values()) {
+      if (remote.pvpKo) continue;
+      const distance = Math.hypot(remote.x - tx, remote.y - ty);
+      if (distance < nearestDistance) {
+        nearest = remote;
+        nearestDistance = distance;
+      }
+    }
+
+    return nearest;
+  }
+
   interact() {
     if (this.dialog) { this.advanceDialog(); return; }
     if (this.shop) { return; }
+
+    if (this.multiplayerActive && this.pvpAttackHandler && !this.pvpKnockedOut) {
+      const remote = this.facingRemotePlayer();
+      if (remote) {
+        this.pvpAttackHandler(remote.sessionId);
+        chip.sfx('hit');
+        return;
+      }
+    }
+
     // sign?
     const tx = Math.floor(this.px / T16), ty = Math.floor(this.py / T16);
     const [fx, fy] = DIRS[this.pdir];
@@ -1029,7 +1172,15 @@ export class Game {
           const nw = g.measureText(remote.name).width;
           g.fillStyle = 'rgba(16,24,48,0.75)';
           g.fillRect(x + 18 - nw / 2 - 3, y - 12, nw + 6, 11);
-          pTextC(g, remote.name, x + 18, y - 11, 7, '#88f0a0');
+          pTextC(g, remote.name, x + 18, y - 11, 7, remote.pvpKo ? '#888898' : '#88f0a0');
+
+          if (remote.pvpMaxHp > 0) {
+            const hpPct = Math.max(0, Math.min(1, remote.pvpHp / remote.pvpMaxHp));
+            g.fillStyle = 'rgba(16,24,48,0.9)';
+            g.fillRect(x - 2, y - 22, 40, 6);
+            g.fillStyle = remote.pvpKo ? '#606070' : remote.hitT > 0 ? '#fff' : '#f04040';
+            g.fillRect(x - 1, y - 21, 38 * hpPct, 4);
+          }
 
           if (remote.bubble) {
             const lines = wrapText(g, remote.bubble, 140, 7);
@@ -1147,6 +1298,16 @@ export class Game {
     pText(g, `${this.player.zeni}z`, 170, 62, 7, '#f8d030');
     pText(g, `EXP ${this.player.exp}/${expForLevel(this.player.lv)}`, 60, 74, 6, '#a8b0c0');
 
+    if (this.multiplayerActive && this.pvpMaxHp > 0) {
+      const pvpPct = Math.max(0, Math.min(1, this.pvpHp / this.pvpMaxHp));
+      panel(g, VW / 2 - 100, 8, 200, 26, this.pvpKnockedOut ? '#f04040' : '#585878', 'rgba(10,14,30,0.84)');
+      g.fillStyle = '#101828';
+      g.fillRect(VW / 2 - 88, 20, 176, 7);
+      g.fillStyle = this.pvpKnockedOut ? '#606070' : this.pvpHitT > 0 ? '#fff' : '#f04040';
+      g.fillRect(VW / 2 - 87, 21, 174 * pvpPct, 5);
+      pTextC(g, this.pvpKnockedOut ? 'PVP: DERROTADO' : `PVP ${this.pvpHp}/${this.pvpMaxHp}`, VW / 2, 11, 6, '#fff');
+    }
+
     // minimap top-right
     const mw = this.world.w, mh = this.world.h;
     const mmScale = 1.5;
@@ -1197,6 +1358,13 @@ export class Game {
       panel(g, mmX - 224, mmY - 4, 220, 14 + lines.length * 10, '#585878');
       pText(g, 'MISSAO', mmX - 216, mmY + 2, 7, '#f8d030');
       lines.forEach((l, i) => pText(g, l, mmX - 216, mmY + 14 + i * 10, 6, '#e8e8f0'));
+    }
+
+    if (this.pvpKnockedOut) {
+      g.fillStyle = 'rgba(5,7,13,0.52)';
+      g.fillRect(0, 0, VW, VH);
+      pTextC(g, 'DERROTADO NO PVP', VW / 2, VH / 2 - 18, 14, '#f04040');
+      pTextC(g, 'Aguarde alguns segundos para se recuperar', VW / 2, VH / 2 + 12, 7, '#fff');
     }
 
     // chat bottom-left (above input)
