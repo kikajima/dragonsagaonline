@@ -348,6 +348,24 @@ export default function Home() {
         onPresence(count) {
           if (!cancelled) game.setOnlineCount(count);
         },
+        onPvpState(player) {
+          if (!cancelled) {
+            game.setPvpState(player.pvpHp, player.pvpMaxHp, player.pvpKo);
+          }
+        },
+        onPvpHit(event) {
+          if (!cancelled) game.receivePvpHit(event);
+        },
+        onPvpKo(event) {
+          if (!cancelled) game.receivePvpKo(event);
+        },
+        onPvpRespawn(player) {
+          if (!cancelled) game.receivePvpRespawn(player);
+        },
+        onPvpError(event) {
+          if (cancelled) return;
+          game.toast = { text: event.message || 'Ataque PvP indisponível.', t: 1.2 };
+        },
       },
     })
       .then((connection) => {
@@ -358,6 +376,10 @@ export default function Home() {
 
         multiplayerRef.current = connection;
         game.setMultiplayerActive(true);
+        game.setMultiplayerSessionId(connection.sessionId);
+        game.setPvpAttackHandler((targetSessionId) => {
+          multiplayerRef.current?.sendPvpAttack(targetSessionId);
+        });
         setMultiplayerStatus('online');
 
         connection.sendMove(game.px, game.py, game.pdir);
@@ -390,6 +412,8 @@ export default function Home() {
 
       const connection = multiplayerRef.current;
       multiplayerRef.current = null;
+      game.setPvpAttackHandler(null);
+      game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
       if (connection) {
