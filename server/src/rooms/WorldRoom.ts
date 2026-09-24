@@ -50,6 +50,7 @@ interface OnlinePlayer {
   combatKi: number;
   flags: Record<string, unknown>;
   items: Record<string, number>;
+  gearOwned: string[];
   canSuper: boolean;
   pvpHp: number;
   pvpMaxHp: number;
@@ -117,6 +118,24 @@ interface WorldActionPayload {
   action?: "shop_buy" | "world_item" | "collect_ball" | "wish" | "master_quest" | "fountain_heal";
   arg?: string;
 }
+interface TradeRequestPayload { targetSessionId?: string; }
+interface TradeOfferPayload { tradeId?: string; itemId?: string; quantity?: number; }
+interface TradeAcceptPayload { tradeId?: string; }
+interface TradeCancelPayload { tradeId?: string; }
+
+interface TradeOffer {
+  itemId: string;
+  quantity: number;
+}
+
+interface ActiveTrade {
+  tradeId: string;
+  aSessionId: string;
+  bSessionId: string;
+  offers: Map<string, TradeOffer>;
+  accepted: Set<string>;
+  createdAt: number;
+}
 
 const DIRECTIONS = new Set<Direction>(["down","up","left","right"]);
 const MAX_CHAT_LENGTH = 80;
@@ -128,6 +147,12 @@ const PVP_ATTACK_COOLDOWN_MS = 700;
 const PVP_RESPAWN_MS = 5000;
 const PVE_RANGE = 34;
 const PVE_LOCK_MS = 60000;
+const TRADE_RANGE = 64;
+const TRADE_TTL_MS = 60000;
+const TRADE_ITEMS = new Set([
+  "sensu","capsula","elixir","bastao","armadura","scouter","espada","manto",
+]);
+const TRADE_GEAR = new Set(["bastao","armadura","scouter","espada","manto"]);
 
 function publicPlayer(player: OnlinePlayer) {
   return {
@@ -185,6 +210,14 @@ function combatDamage(attack: number, defense: number, power = 1, defending = fa
     attack * power * (0.85 + Math.random() * 0.3) -
     defense * (defending ? 1.6 : 1) * 0.5;
   return Math.max(1, Math.floor(raw));
+}
+
+function ownsTradeItem(player: OnlinePlayer, itemId: string, quantity: number): boolean {
+  if (!TRADE_ITEMS.has(itemId) || quantity < 1 || quantity > 99) return false;
+  if (TRADE_GEAR.has(itemId)) {
+    return quantity === 1 && player.gearOwned.includes(itemId);
+  }
+  return (player.items[itemId] || 0) >= quantity;
 }
 
 function isFacing(attacker: OnlinePlayer, target: OnlinePlayer): boolean {
@@ -344,6 +377,7 @@ function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapsh
   player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, player.combatKi)));
   player.flags = objectRecord(state.flags);
   player.items = numberRecord(state.items);
+  player.gearOwned = stringArray(state.gearOwned);
   player.canSuper = Boolean(player.flags.super) || player.level >= 12;
 
   const stats = computeCharacterStats({
@@ -351,7 +385,7 @@ function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapsh
     level: player.level,
     baseAtk: numberFrom(state.baseAtk, 0),
     baseDef: numberFrom(state.baseDef, 0),
-    gearOwned: stringArray(state.gearOwned),
+    gearOwned: player.gearOwned,
   });
   player.attack = stats.attack;
   player.defense = stats.defense;
@@ -363,6 +397,51 @@ function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapsh
   player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
   if (Number.isFinite(character.x)) player.x = Number(character.x);
   if (Number.isFinite(character.y)) player.y = Number(character.y);
+}
+
+interface TradeRpcResult {
+  trade_id: string;
+  character_a: CharacterRecord;
+  character_b: CharacterRecord;
+}
+
+async function executeItemTrade(
+  a: OnlinePlayer,
+  b: OnlinePlayer,
+  tradeId: string,
+  offerA: TradeOffer,
+  offerB: TradeOffer,
+): Promise<TradeRpcResult> {
+  const { url, publishableKey } = supabaseConfig();
+  const serverSecret = process.env.PVE_SERVER_SECRET;
+  if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
+
+  const response = await fetch(`${url}/rest/v1/rpc/execute_item_trade`, {
+    method: "POST",
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${a.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_trade_id: tradeId,
+      p_character_a: a.characterId,
+      p_character_b: b.characterId,
+      p_item_a: offerA.itemId,
+      p_quantity_a: offerA.quantity,
+      p_item_b: offerB.itemId,
+      p_quantity_b: offerB.quantity,
+      p_server_secret: serverSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase item trade RPC failed: ${response.status} ${detail}`);
+  }
+
+  return (await response.json()) as TradeRpcResult;
 }
 
 async function validateAccessTokenUser(token: string): Promise<string | null> {
@@ -397,6 +476,7 @@ export class WorldRoom extends Room {
   private players = new Map<string, OnlinePlayer>();
   private mobs = new Map<string, WorldMob>();
   private encounters = new Map<string, ActiveEncounter>();
+  private trades = new Map<string, ActiveTrade>();
   private lastMobBroadcastAt = 0;
 
   onCreate() {
@@ -424,6 +504,42 @@ export class WorldRoom extends Room {
     const character = await loadOwnedCharacter(token, characterId);
     if (!character) throw new ServerError(403, "Character not found or not owned by this account.");
     return { userId: character.user_id, accessToken: token, character };
+  }
+
+  private clientBySessionId(sessionId: string): Client | undefined {
+    return this.clients.find((client) => client.sessionId === sessionId);
+  }
+
+  private tradeForSession(sessionId: string): ActiveTrade | undefined {
+    for (const trade of this.trades.values()) {
+      if (trade.aSessionId === sessionId || trade.bSessionId === sessionId) return trade;
+    }
+    return undefined;
+  }
+
+  private sendTradeState(trade: ActiveTrade) {
+    for (const sessionId of [trade.aSessionId, trade.bSessionId]) {
+      const client = this.clientBySessionId(sessionId);
+      if (!client) continue;
+      const otherSessionId = sessionId === trade.aSessionId ? trade.bSessionId : trade.aSessionId;
+      client.send("trade_state", {
+        tradeId: trade.tradeId,
+        selfOffer: trade.offers.get(sessionId) || null,
+        otherOffer: trade.offers.get(otherSessionId) || null,
+        selfAccepted: trade.accepted.has(sessionId),
+        otherAccepted: trade.accepted.has(otherSessionId),
+      });
+    }
+  }
+
+  private cancelTrade(trade: ActiveTrade, message: string) {
+    this.trades.delete(trade.tradeId);
+    for (const sessionId of [trade.aSessionId, trade.bSessionId]) {
+      this.clientBySessionId(sessionId)?.send("trade_cancelled", {
+        tradeId: trade.tradeId,
+        message,
+      });
+    }
   }
 
   private updateMobs(dtMs: number) {
@@ -593,6 +709,131 @@ export class WorldRoom extends Room {
           "Não foi possível concluir essa ação.";
         client.send("world_action_error", { action, message });
       }
+    },
+
+    trade_request: (client: Client, payload: TradeRequestPayload) => {
+      const player = this.players.get(client.sessionId);
+      const target = this.players.get(String(payload?.targetSessionId || "").trim());
+      if (!player || !target || target.sessionId === player.sessionId) return;
+
+      const fail = (message: string) => client.send("trade_error", { message });
+      if (this.encounters.has(player.sessionId) || this.encounters.has(target.sessionId)) {
+        return fail("Não é possível negociar durante uma batalha.");
+      }
+      if (player.koUntil > Date.now() || target.koUntil > Date.now()) {
+        return fail("Não é possível negociar enquanto alguém está derrotado.");
+      }
+      if (Math.hypot(target.x - player.x, target.y - player.y) > TRADE_RANGE) {
+        return fail("Chegue mais perto do outro jogador.");
+      }
+      if (this.tradeForSession(player.sessionId) || this.tradeForSession(target.sessionId)) {
+        return fail("Um dos jogadores já está em uma troca.");
+      }
+
+      const trade: ActiveTrade = {
+        tradeId: crypto.randomUUID(),
+        aSessionId: player.sessionId,
+        bSessionId: target.sessionId,
+        offers: new Map(),
+        accepted: new Set(),
+        createdAt: Date.now(),
+      };
+      this.trades.set(trade.tradeId, trade);
+
+      client.send("trade_open", {
+        tradeId: trade.tradeId,
+        otherSessionId: target.sessionId,
+        otherName: target.name,
+      });
+      this.clientBySessionId(target.sessionId)?.send("trade_open", {
+        tradeId: trade.tradeId,
+        otherSessionId: player.sessionId,
+        otherName: player.name,
+      });
+
+      setTimeout(() => {
+        const current = this.trades.get(trade.tradeId);
+        if (current && Date.now() - current.createdAt >= TRADE_TTL_MS) {
+          this.cancelTrade(current, "A troca expirou.");
+        }
+      }, TRADE_TTL_MS + 250);
+    },
+
+    trade_offer: (client: Client, payload: TradeOfferPayload) => {
+      const trade = this.trades.get(String(payload?.tradeId || ""));
+      const player = this.players.get(client.sessionId);
+      if (!trade || !player) return;
+      if (client.sessionId !== trade.aSessionId && client.sessionId !== trade.bSessionId) return;
+
+      const itemId = String(payload?.itemId || "");
+      const quantity = Math.max(1, Math.floor(numberFrom(payload?.quantity, 1)));
+      if (!ownsTradeItem(player, itemId, quantity)) {
+        return client.send("trade_error", { message: "Item ou quantidade indisponível." });
+      }
+
+      trade.offers.set(client.sessionId, { itemId, quantity });
+      trade.accepted.clear();
+      this.sendTradeState(trade);
+    },
+
+    trade_accept: async (client: Client, payload: TradeAcceptPayload) => {
+      const trade = this.trades.get(String(payload?.tradeId || ""));
+      if (!trade) return;
+      if (client.sessionId !== trade.aSessionId && client.sessionId !== trade.bSessionId) return;
+
+      const a = this.players.get(trade.aSessionId);
+      const b = this.players.get(trade.bSessionId);
+      const offerA = trade.offers.get(trade.aSessionId);
+      const offerB = trade.offers.get(trade.bSessionId);
+      if (!a || !b || !offerA || !offerB) {
+        return client.send("trade_error", { message: "Os dois jogadores precisam fazer uma oferta." });
+      }
+
+      if (
+        this.encounters.has(a.sessionId) ||
+        this.encounters.has(b.sessionId) ||
+        a.koUntil > Date.now() ||
+        b.koUntil > Date.now() ||
+        Math.hypot(b.x - a.x, b.y - a.y) > TRADE_RANGE
+      ) {
+        return this.cancelTrade(trade, "A troca foi cancelada porque as condições mudaram.");
+      }
+
+      if (!ownsTradeItem(a, offerA.itemId, offerA.quantity) || !ownsTradeItem(b, offerB.itemId, offerB.quantity)) {
+        return this.cancelTrade(trade, "Um dos itens oferecidos não está mais disponível.");
+      }
+
+      trade.accepted.add(client.sessionId);
+      this.sendTradeState(trade);
+      if (trade.accepted.size < 2) return;
+
+      try {
+        const result = await executeItemTrade(a, b, trade.tradeId, offerA, offerB);
+        syncOnlinePlayer(a, result.character_a);
+        syncOnlinePlayer(b, result.character_b);
+        this.trades.delete(trade.tradeId);
+
+        this.clientBySessionId(a.sessionId)?.send("trade_complete", {
+          tradeId: trade.tradeId,
+          otherName: b.name,
+          character: result.character_a,
+        });
+        this.clientBySessionId(b.sessionId)?.send("trade_complete", {
+          tradeId: trade.tradeId,
+          otherName: a.name,
+          character: result.character_b,
+        });
+      } catch (error) {
+        console.error("[trade]", error);
+        this.cancelTrade(trade, "A troca não pôde ser concluída.");
+      }
+    },
+
+    trade_cancel: (client: Client, payload: TradeCancelPayload) => {
+      const trade = this.trades.get(String(payload?.tradeId || ""));
+      if (!trade) return;
+      if (client.sessionId !== trade.aSessionId && client.sessionId !== trade.bSessionId) return;
+      this.cancelTrade(trade, "A troca foi cancelada.");
     },
 
     pve_begin: (client: Client, payload: PveBeginPayload) => {
@@ -1003,6 +1244,7 @@ export class WorldRoom extends Room {
       combatKi: Math.max(0, Math.min(stats.maxKi, Math.floor(numberFrom(character.ki, stats.maxKi)))),
       flags: objectRecord(state.flags),
       items: numberRecord(state.items),
+      gearOwned: stringArray(state.gearOwned),
       canSuper: Boolean(objectRecord(state.flags).super) || level >= 12,
       pvpHp: stats.maxHp,
       pvpMaxHp: stats.maxHp,
@@ -1020,6 +1262,8 @@ export class WorldRoom extends Room {
 
   async onLeave(client: Client) {
     const leavingPlayer = this.players.get(client.sessionId);
+    const activeTrade = this.tradeForSession(client.sessionId);
+    if (activeTrade) this.cancelTrade(activeTrade, "A troca foi cancelada porque um jogador saiu.");
     this.players.delete(client.sessionId);
     const encounter = this.encounters.get(client.sessionId);
     if (encounter) {
