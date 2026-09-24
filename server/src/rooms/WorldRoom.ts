@@ -86,7 +86,7 @@ function isFacing(attacker: OnlinePlayer, target: OnlinePlayer): boolean {
   const distance = Math.hypot(dx, dy);
   if (distance <= 0.001) return true;
 
-  const facing =
+  const facing: [number, number] =
     attacker.dir === "left" ? [-1, 0] :
     attacker.dir === "right" ? [1, 0] :
     attacker.dir === "up" ? [0, -1] :
