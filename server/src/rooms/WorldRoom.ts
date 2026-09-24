@@ -44,6 +44,8 @@ interface OnlinePlayer {
   dir: Direction;
   level: number;
   sagaCycle: number;
+  questIdx: number;
+  questProgress: number;
   attack: number;
   defense: number;
   maxHp: number;
@@ -229,6 +231,46 @@ function ownsTradeItem(player: OnlinePlayer, itemId: string, quantity: number): 
   return (player.items[itemId] || 0) >= quantity;
 }
 
+function sagaQuestRule(questIdx: number): { target: string; count: number } | null {
+  if (questIdx === 1) return { target: "saiba", count: 3 };
+  if (questIdx === 2) return { target: "soldado", count: 3 };
+  if (questIdx === 3) return { target: "radix", count: 1 };
+  if (questIdx === 4) return { target: "nappos", count: 1 };
+  if (questIdx === 5) return { target: "vegar", count: 1 };
+  return null;
+}
+
+function applyProvisionalQuestProgress(player: OnlinePlayer, enemyId: string) {
+  const rule = sagaQuestRule(player.questIdx);
+  let questCompleted = false;
+  const previousQuestIdx = player.questIdx;
+
+  if (rule && rule.target === enemyId) {
+    player.questProgress += 1;
+    if (player.questProgress >= rule.count) {
+      if (player.questIdx === 5) {
+        player.questIdx = 0;
+        player.sagaCycle += 1;
+      } else {
+        player.questIdx += 1;
+      }
+      player.questProgress = 0;
+      questCompleted = true;
+
+      if (enemyId === "saiba") player.flags.kurin = true;
+      if (enemyId === "soldado") player.flags.nailo = true;
+    }
+  }
+
+  return {
+    previousQuestIdx,
+    questIdx: player.questIdx,
+    questProgress: player.questProgress,
+    sagaCycle: player.sagaCycle,
+    questCompleted,
+  };
+}
+
 function isFacing(attacker: OnlinePlayer, target: OnlinePlayer): boolean {
   const dx = target.x - attacker.x;
   const dy = target.y - attacker.y;
@@ -393,6 +435,8 @@ function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapsh
   const state = character.state || {};
   player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
   player.sagaCycle = Math.max(0, Math.floor(numberFrom(state.sagaCycle, player.sagaCycle)));
+  player.questIdx = Math.max(0, Math.floor(numberFrom(state.questIdx, player.questIdx)));
+  player.questProgress = Math.max(0, Math.floor(numberFrom(state.questProgress, player.questProgress)));
   player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, player.combatHp)));
   player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, player.combatKi)));
   player.flags = objectRecord(state.flags);
@@ -529,6 +573,63 @@ export class WorldRoom extends Room {
 
   private clientBySessionId(sessionId: string): Client | undefined {
     return this.clients.find((client) => client.sessionId === sessionId);
+  }
+
+  private finalizePveVictory(
+    client: Client,
+    player: OnlinePlayer,
+    encounter: ActiveEncounter,
+    mob: WorldMob,
+    enemy: (typeof ENEMY_RULES)[string],
+  ) {
+    if (this.encounters.get(client.sessionId) !== encounter) return;
+
+    encounter.outcome = "win";
+    const drop = enemy.drop && Math.random() < enemy.drop.chance ? enemy.drop.id : null;
+    const hp = Math.max(1, encounter.playerHp);
+    const ki = Math.max(0, encounter.playerKi);
+    const quest = applyProvisionalQuestProgress(player, encounter.enemyId);
+
+    this.encounters.delete(client.sessionId);
+    mob.engagedBy = null;
+    mob.engagedUntil = 0;
+    player.combatHp = hp;
+    player.combatKi = ki;
+
+    mob.dead = true;
+    mob.respawnAt = Date.now() + (
+      mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000
+    );
+    mob.vx = 0;
+    mob.vy = 0;
+    this.broadcast("mob_update", publicMob(mob));
+
+    client.send("pve_state", {
+      battleId: encounter.battleId,
+      playerHp: encounter.playerHp,
+      playerKi: encounter.playerKi,
+      enemyHp: 0,
+      enemyMaxHp: encounter.enemyMaxHp,
+      outcome: "win",
+    });
+
+    client.send("pve_victory_confirmed", {
+      battleId: encounter.battleId,
+      spawnId: mob.spawnId,
+      enemyId: mob.enemyId,
+      ...quest,
+    });
+
+    this.queueReward(client.sessionId, () =>
+      this.persistVictoryReward(
+        client.sessionId,
+        player,
+        encounter,
+        drop,
+        hp,
+        ki,
+      ),
+    );
   }
 
   private queueReward(sessionId: string, task: () => Promise<void>): Promise<void> {
@@ -963,14 +1064,28 @@ export class WorldRoom extends Room {
       const existingEncounter = this.encounters.get(client.sessionId);
       if (existingEncounter) {
         const existingMob = this.mobs.get(existingEncounter.spawnId);
-        if (existingMob && existingMob.engagedUntil <= now) {
-          existingMob.engagedBy = null;
-          existingMob.engagedUntil = 0;
+        const terminal = existingEncounter.outcome !== "active";
+        const expired = Boolean(existingMob && existingMob.engagedUntil <= now);
+        if (terminal || expired) {
+          if (existingMob) {
+            existingMob.engagedBy = null;
+            existingMob.engagedUntil = 0;
+          }
           this.encounters.delete(client.sessionId);
         } else {
           return client.send("pve_error", { message: "Você já está em uma batalha." });
         }
       }
+
+      if (mob.isBoss) {
+        const quest = sagaQuestRule(player.questIdx);
+        if (!quest || quest.target !== mob.enemyId) {
+          return client.send("pve_error", {
+            message: "Esse poder é enorme... prepare-se primeiro!",
+          });
+        }
+      }
+
       if (mob.dead) return client.send("pve_error", { message: "Esse inimigo já foi derrotado." });
       if (mob.engagedBy && mob.engagedBy !== client.sessionId && mob.engagedUntil > now) {
         return client.send("pve_error", { message: "Outro jogador já está enfrentando esse inimigo." });
@@ -1138,7 +1253,8 @@ export class WorldRoom extends Room {
       }
 
       if (encounter.enemyHp <= 0) {
-        encounter.outcome = "win";
+        this.finalizePveVictory(client, player, encounter, this.mobs.get(encounter.spawnId)!, enemy);
+        return;
       } else if (encounter.outcome === "active") {
         const enemyDamage = combatDamage(
           encounter.enemyAttack,
@@ -1229,40 +1345,7 @@ export class WorldRoom extends Room {
         return;
       }
 
-      const drop = enemy.drop && Math.random() < enemy.drop.chance ? enemy.drop.id : null;
-      const hp = Math.max(1, encounter.playerHp);
-      const ki = Math.max(0, encounter.playerKi);
-
-      // The battle lock is released as soon as the authoritative combat state says
-      // the enemy is defeated. Persistence happens independently afterwards.
-      this.encounters.delete(client.sessionId);
-      mob.engagedBy = null;
-      mob.engagedUntil = 0;
-      player.combatHp = hp;
-      player.combatKi = ki;
-
-      mob.dead = true;
-      mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
-      mob.vx = 0;
-      mob.vy = 0;
-      this.broadcast("mob_update", publicMob(mob));
-
-      client.send("pve_victory_confirmed", {
-        battleId: encounter.battleId,
-        spawnId: mob.spawnId,
-        enemyId: mob.enemyId,
-      });
-
-      this.queueReward(client.sessionId, () =>
-        this.persistVictoryReward(
-          client.sessionId,
-          player,
-          encounter,
-          drop,
-          hp,
-          ki,
-        ),
-      );
+      this.finalizePveVictory(client, player, encounter, mob, enemy);
       return;
     },
 
@@ -1361,6 +1444,8 @@ export class WorldRoom extends Room {
       dir: "down",
       level,
       sagaCycle: Math.max(0, Math.floor(numberFrom(state.sagaCycle, 0))),
+      questIdx: Math.max(0, Math.floor(numberFrom(state.questIdx, 0))),
+      questProgress: Math.max(0, Math.floor(numberFrom(state.questProgress, 0))),
       attack: stats.attack,
       defense: stats.defense,
       maxHp: stats.maxHp,
