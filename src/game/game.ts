@@ -905,8 +905,26 @@ export class Game {
     if (q.id === 'q0' && !this.player.flags.kurin) { this.player.flags.kurin = true; this.toast = { text: 'Kurin entrou no grupo!', t: 4 }; }
     if (q.id === 'q1' && !this.player.flags.kurin) { this.player.flags.kurin = true; this.toast = { text: 'Kurin entrou no grupo!', t: 4 }; }
     if (q.id === 'q2' && !this.player.flags.nailo) { this.player.flags.nailo = true; this.toast = { text: 'Nailo entrou no grupo!', t: 4 }; }
+
     this.player.questIdx++;
     this.player.questProgress = 0;
+
+    if (this.player.questIdx >= QUESTS.length) {
+      const completedSaga = this.player.sagaCycle;
+      this.player.questIdx = 0;
+      this.player.sagaCycle++;
+      this.toast = {
+        text: `SAGA ${completedSaga} COMPLETA! SAGA ${this.player.sagaCycle} LIBERADA!`,
+        t: 4,
+      };
+      this.addChat({
+        name: 'Saga',
+        text: `Fale com o Mestre Kame para começar a Saga ${this.player.sagaCycle}.`,
+        color: '#f8d030',
+        sys: true,
+      });
+    }
+
     this.save();
   }
 
@@ -2018,6 +2036,18 @@ export class Game {
         const it = ITEMS[id];
         const owned = it.kind === 'gear' && this.player.gearOwned.includes(id);
         if (owned) { chip.sfx('cancel'); return true; }
+
+        if (this.multiplayerActive) {
+          if (this.player.zeni < it.price) {
+            chip.sfx('cancel');
+          } else if (this.shopPurchaseHandler) {
+            this.shopPurchaseHandler(id);
+          } else {
+            this.toast = { text: 'SERVIDOR DA LOJA INDISPONÍVEL', t: 2 };
+          }
+          return true;
+        }
+
         if (this.player.zeni >= it.price) {
           this.player.zeni -= it.price;
           if (it.kind === 'gear') {
@@ -2048,6 +2078,16 @@ export class Game {
           if (items.length && this.itemIdx < items.length) {
             const [id] = items[this.itemIdx];
             const it = ITEMS[id];
+
+            if (this.multiplayerActive) {
+              if (this.useItemHandler) {
+                this.useItemHandler(id);
+              } else {
+                this.toast = { text: 'SERVIDOR DE ITENS INDISPONÍVEL', t: 2 };
+              }
+              return true;
+            }
+
             if (it.kind === 'heal') { this.player.hp = Math.min(this.maxHp(), this.player.hp + (it.power || 0)); }
             else if (it.kind === 'kiheal') { this.player.ki = Math.min(this.maxKi(), this.player.ki + (it.power || 0)); }
             else if (it.kind === 'fullheal') { this.player.hp = this.maxHp(); this.player.ki = this.maxKi(); }
