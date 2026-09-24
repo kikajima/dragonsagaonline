@@ -120,3 +120,215 @@
     @apply bg-background text-foreground;
   }
 }
+
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background: #000;
+  overscroll-behavior: none;
+}
+
+body {
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.dso-game-page {
+  min-height: 100dvh;
+  height: 100dvh;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: #000;
+  padding: 12px;
+}
+
+.dso-status-bar {
+  position: fixed;
+  top: 8px;
+  right: 8px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dso-game-shell {
+  position: relative;
+  width: min(960px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.dso-game-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 960 / 600;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.dso-mobile-controls {
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.dso-joystick,
+.dso-touch-actions {
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.dso-controls-help {
+  margin-top: 8px;
+  text-align: center;
+}
+
+@media (pointer: coarse) and (orientation: portrait) {
+  .dso-game-page {
+    justify-content: flex-start;
+    padding:
+      max(6px, env(safe-area-inset-top))
+      0
+      max(6px, env(safe-area-inset-bottom));
+  }
+
+  .dso-status-bar {
+    position: relative;
+    top: auto;
+    right: auto;
+    width: 100%;
+    min-height: 44px;
+    box-sizing: border-box;
+    justify-content: flex-end;
+    gap: 6px;
+    padding:
+      4px
+      max(8px, env(safe-area-inset-right))
+      4px
+      max(8px, env(safe-area-inset-left));
+    border-left: none !important;
+    border-right: none !important;
+  }
+
+  .dso-game-shell {
+    flex: 1 1 auto;
+    width: 100%;
+    max-width: none;
+    min-height: 0;
+  }
+
+  .dso-game-stage {
+    flex: 0 0 auto;
+    width: 100%;
+    aspect-ratio: 960 / 600;
+  }
+
+  .dso-mobile-controls {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 150px;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-sizing: border-box;
+    padding:
+      12px
+      max(16px, env(safe-area-inset-right))
+      max(16px, env(safe-area-inset-bottom))
+      max(16px, env(safe-area-inset-left));
+  }
+
+  .dso-joystick {
+    position: relative !important;
+    left: auto !important;
+    bottom: auto !important;
+    width: clamp(96px, 28vw, 132px) !important;
+    flex: 0 0 auto;
+  }
+
+  .dso-touch-actions {
+    position: relative !important;
+    right: auto !important;
+    bottom: auto !important;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .dso-controls-help {
+    display: none;
+  }
+}
+
+@media (pointer: coarse) and (orientation: landscape) {
+  .dso-game-page {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .dso-status-bar {
+    top: max(4px, env(safe-area-inset-top));
+    right: max(4px, env(safe-area-inset-right));
+    transform: scale(0.82);
+    transform-origin: top right;
+  }
+
+  .dso-game-shell {
+    width: min(100vw, calc(100dvh * 1.6));
+    max-width: none;
+  }
+
+  .dso-game-stage {
+    width: 100%;
+    aspect-ratio: 960 / 600;
+  }
+
+  .dso-mobile-controls {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+  }
+
+  .dso-joystick {
+    position: absolute;
+    left: max(8px, env(safe-area-inset-left)) !important;
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    width: clamp(76px, 15vh, 104px) !important;
+  }
+
+  .dso-touch-actions {
+    position: absolute;
+    right: max(8px, env(safe-area-inset-right)) !important;
+    bottom: max(8px, env(safe-area-inset-bottom)) !important;
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+  .dso-touch-actions button[aria-label="Abrir chat"] {
+    width: clamp(42px, 10vh, 58px) !important;
+    height: clamp(30px, 7vh, 38px) !important;
+  }
+
+  .dso-touch-actions button[aria-label="Voltar ou abrir menu"] {
+    width: clamp(48px, 12vh, 64px) !important;
+  }
+
+  .dso-touch-actions button[aria-label="Confirmar ou interagir"] {
+    width: clamp(54px, 14vh, 72px) !important;
+  }
+
+  .dso-controls-help {
+    display: none;
+  }
+}
