@@ -88,6 +88,7 @@ export default function Home() {
     COLYSEUS_URL ? 'offline' : 'disabled',
   );
   const [multiplayerMessage, setMultiplayerMessage] = useState('');
+  const [multiplayerRetry, setMultiplayerRetry] = useState(0);
   const [touchControls, setTouchControls] = useState(false);
   const [stickPosition, setStickPosition] = useState({ x: 0, y: 0 });
 
@@ -315,6 +316,17 @@ export default function Home() {
 
     let cancelled = false;
     let movementTimer: ReturnType<typeof setInterval> | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let sequence = 0;
+    let lastSent = { x: Number.NaN, y: Number.NaN, dir: '' as string, at: 0 };
+
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimer) return;
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        if (!cancelled) setMultiplayerRetry((value) => value + 1);
+      }, 2500);
+    };
 
     setMultiplayerStatus('connecting');
     setMultiplayerMessage('');
@@ -329,6 +341,7 @@ export default function Home() {
           setMultiplayerStatus(status);
           setMultiplayerMessage(message || '');
           game.setMultiplayerActive(status === 'online');
+          if (status === 'offline' || status === 'error') scheduleReconnect();
         },
         onSnapshot(players) {
           if (!cancelled) game.setRemoteSnapshot(players);
@@ -366,6 +379,23 @@ export default function Home() {
           if (cancelled) return;
           game.toast = { text: event.message || 'Ataque PvP indisponível.', t: 1.2 };
         },
+        onMobSnapshot(mobs) {
+          if (!cancelled) game.setMobSnapshot(mobs);
+        },
+        onMobUpdate(mob) {
+          if (!cancelled) game.upsertMob(mob);
+        },
+        onPveBegin(event) {
+          if (!cancelled) game.receivePveBegin(event);
+        },
+        onPveResult(event) {
+          if (!cancelled) game.receivePveResult(event);
+        },
+        onPveError(event) {
+          if (cancelled) return;
+          game.pendingPveSpawnId = '';
+          game.toast = { text: event.message || 'Batalha indisponível.', t: 1.4 };
+        },
       },
     })
       .then((connection) => {
@@ -380,20 +410,34 @@ export default function Home() {
         game.setPvpAttackHandler((targetSessionId) => {
           multiplayerRef.current?.sendPvpAttack(targetSessionId);
         });
+        game.setPveHandlers(
+          (spawnId) => multiplayerRef.current?.sendPveBegin(spawnId),
+          (payload) => multiplayerRef.current?.sendPveComplete(payload),
+        );
         setMultiplayerStatus('online');
+        setMultiplayerMessage('');
 
         connection.sendMove(game.px, game.py, game.pdir);
+        lastSent = { x: game.px, y: game.py, dir: game.pdir, at: Date.now() };
 
         movementTimer = setInterval(() => {
           const activeGame = gameRef.current;
           const activeConnection = multiplayerRef.current;
           if (!activeGame || !activeConnection || activeGame.state !== 'world') return;
 
+          const now = Date.now();
+          const moved = Math.hypot(activeGame.px - lastSent.x, activeGame.py - lastSent.y) > 0.3;
+          const directionChanged = activeGame.pdir !== lastSent.dir;
+          const heartbeat = now - lastSent.at >= 1000;
+          if (!moved && !directionChanged && !heartbeat) return;
+
+          sequence += 1;
           activeConnection.sendMove(
             activeGame.px,
             activeGame.py,
             activeGame.pdir,
           );
+          lastSent = { x: activeGame.px, y: activeGame.py, dir: activeGame.pdir, at: now };
         }, 100);
       })
       .catch((error) => {
@@ -404,15 +448,18 @@ export default function Home() {
         setMultiplayerMessage(
           error instanceof Error ? error.message : 'Falha ao conectar ao mundo online.',
         );
+        scheduleReconnect();
       });
 
     return () => {
       cancelled = true;
       if (movementTimer) clearInterval(movementTimer);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
 
       const connection = multiplayerRef.current;
       multiplayerRef.current = null;
       game.setPvpAttackHandler(null);
+      game.setPveHandlers(null, null);
       game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
@@ -420,7 +467,7 @@ export default function Home() {
         void connection.leave().catch(() => undefined);
       }
     };
-  }, [authReady, session?.access_token, activeCharacterId]);
+  }, [authReady, session?.access_token, activeCharacterId, multiplayerRetry]);
 
   // Stop the game loop only on final unmount (survives Fast Refresh / StrictMode re-runs)
   useEffect(() => {
