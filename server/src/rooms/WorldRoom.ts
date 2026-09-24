@@ -556,6 +556,56 @@ export class WorldRoom extends Room {
       this.broadcast("chat", { sessionId: player.sessionId, name: player.name, text }, { except: client });
     },
 
+    shop_purchase: async (client: Client, payload: { itemId?: string }) => {
+      const player = this.players.get(client.sessionId);
+      const itemId = String(payload?.itemId || "").trim();
+      if (!player || !itemId || this.encounters.has(client.sessionId)) return;
+
+      if (Math.hypot(player.x - SHOP_POSITION.x, player.y - SHOP_POSITION.y) > 64) {
+        client.send("action_error", { action: "shop_purchase", message: "Chegue mais perto da loja." });
+        return;
+      }
+
+      await this.runCharacterAction(client, player, "shop_purchase", {
+        item_id: itemId,
+      });
+    },
+
+    use_item: async (client: Client, payload: { itemId?: string }) => {
+      const player = this.players.get(client.sessionId);
+      const itemId = String(payload?.itemId || "").trim();
+      if (!player || !itemId || this.encounters.has(client.sessionId)) return;
+
+      await this.runCharacterAction(client, player, "use_item", {
+        item_id: itemId,
+      });
+    },
+
+    quest_interact: async (client: Client) => {
+      const player = this.players.get(client.sessionId);
+      if (!player || this.encounters.has(client.sessionId)) return;
+
+      if (Math.hypot(player.x - QUEST_MASTER_POSITION.x, player.y - QUEST_MASTER_POSITION.y) > 64) {
+        client.send("action_error", { action: "quest_intro", message: "Chegue mais perto do Mestre Kame." });
+        return;
+      }
+
+      if (player.questIndex !== 0) {
+        client.send("action_error", { action: "quest_intro", message: "Continue a missão atual antes de reiniciar a saga." });
+        return;
+      }
+
+      await this.runCharacterAction(client, player, "quest_intro");
+    },
+
+    dragon_wish: async (client: Client, payload: { wish?: string }) => {
+      const player = this.players.get(client.sessionId);
+      const wish = String(payload?.wish || "").trim();
+      if (!player || !wish || this.encounters.has(client.sessionId)) return;
+
+      await this.runCharacterAction(client, player, "wish", { wish });
+    },
+
     pve_begin: (client: Client, payload: PveBeginPayload) => {
       const player = this.players.get(client.sessionId);
       const mob = this.mobs.get(String(payload?.spawnId || ""));
@@ -581,6 +631,15 @@ export class WorldRoom extends Room {
       }
       if (Math.hypot(mob.x - player.x, mob.y - player.y) > PVE_RANGE) {
         return client.send("pve_error", { message: "Chegue mais perto do inimigo." });
+      }
+
+      if (mob.isBoss) {
+        const target = QUEST_TARGETS[player.questIndex];
+        if (!target || target.enemyId !== mob.enemyId) {
+          return client.send("pve_error", {
+            message: "Esse boss pertence a outra etapa da saga.",
+          });
+        }
       }
 
       const battleId = crypto.randomUUID();
