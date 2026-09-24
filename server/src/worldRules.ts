@@ -126,7 +126,7 @@ function buildWorldTiles(): Uint8Array {
   stampRect(tiles, 64, 32, 1, 1, T.CACTUS);
   stampRect(tiles, 61, 24, 1, 1, T.CACTUS);
 
-  const forestSpots = [
+  const forestSpots: Array<[number, number]> = [
     [16, 30],
     [16, 36],
     [20, 44],
@@ -160,7 +160,7 @@ function buildWorldTiles(): Uint8Array {
 
   stampRect(tiles, 12, 24, 24, 18, T.GRASS);
 
-  const house = (x: number, y: number, roof = T.ROOF) => {
+  const house = (x: number, y: number, roof: number = T.ROOF) => {
     stampRect(tiles, x, y, 5, 2, roof);
     stampRect(tiles, x, y + 2, 5, 3, T.WALL);
     tiles[(y + 4) * MAP_W + x + 2] = T.DOOR;
@@ -223,7 +223,7 @@ function solidAt(x: number, y: number): boolean {
   const tx = Math.floor(x / TILE_SIZE);
   const ty = Math.floor(y / TILE_SIZE);
   if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return true;
-  return SOLID.has(WORLD_TILES[ty * MAP_W + tx]);
+  return SOLID.has(WORLD_TILES[ty * MAP_W + tx]!);
 }
 
 export function canWalk(x: number, y: number): boolean {
@@ -315,7 +315,7 @@ export interface CharacterStats {
 export function computeCharacterStats(
   input: CharacterCombatInput,
 ): CharacterStats {
-  const cls = CLASS_RULES[input.classId] || CLASS_RULES.saiya;
+  const cls = CLASS_RULES[input.classId] ?? CLASS_RULES.saiya!;
   const level = Math.max(1, Math.floor(input.level || 1));
   let attack =
     Math.floor(cls.atk + cls.growth.atk * (level - 1)) +
