@@ -347,6 +347,123 @@ export class Game {
     this.pveCompleteHandler = complete;
   }
 
+  setWorldActionHandlers(
+    shopPurchase: ((itemId: string) => void) | null,
+    useItem: ((itemId: string) => void) | null,
+    questInteract: (() => void) | null,
+    dragonWish: ((wish: 'power' | 'defense' | 'zeni') => void) | null,
+  ) {
+    this.shopPurchaseHandler = shopPurchase;
+    this.useItemHandler = useItem;
+    this.questInteractHandler = questInteract;
+    this.dragonWishHandler = dragonWish;
+  }
+
+  receiveCharacterSync(snapshot: AuthoritativeCharacterSnapshot) {
+    if (!snapshot?.id) return;
+
+    const previousLevel = this.player.lv;
+    const previousSaga = this.player.sagaCycle;
+    const previousBallCount = this.player.balls.length;
+
+    this.player.lv = Math.max(1, Math.floor(snapshot.level));
+    this.player.exp = Math.max(0, Number(snapshot.xp));
+    this.player.zeni = Math.max(0, Number(snapshot.gold));
+    this.player.hp = Math.max(1, Math.floor(snapshot.hp));
+    this.player.ki = Math.max(0, Math.floor(snapshot.ki));
+    this.player.baseAtk = Math.max(0, Math.floor(snapshot.base_atk));
+    this.player.baseDef = Math.max(0, Math.floor(snapshot.base_def));
+    this.player.items = { ...(snapshot.items || {}) };
+    this.player.gearOwned = [...(snapshot.gear_owned || [])];
+    this.player.balls = [...(snapshot.dragon_balls || [])];
+    this.player.flags = { ...(snapshot.flags || {}) };
+    this.player.questIdx = Math.max(0, Math.floor(snapshot.quest_index));
+    this.player.questProgress = Math.max(0, Math.floor(snapshot.quest_progress));
+    this.player.sagaCycle = Math.max(1, Math.floor(snapshot.saga_cycle || 1));
+    this.refreshBalls();
+
+    this.persistedPlayer = JSON.parse(JSON.stringify(this.player)) as PlayerState;
+
+    if (this.player.lv > previousLevel) {
+      chip.sfx('levelup');
+      this.addChat({
+        name: 'Sistema',
+        text: `${this.player.name} subiu para o nível ${this.player.lv}!`,
+        color: '#88f0a0',
+        sys: true,
+      });
+    }
+
+    if (snapshot.action === 'shop_purchase' && snapshot.item_id) {
+      chip.sfx('coin');
+      const item = ITEMS[snapshot.item_id];
+      this.addChat({
+        name: 'Loja',
+        text: `${this.player.name} comprou ${item?.name || snapshot.item_id}!`,
+        color: '#f8d030',
+        sys: true,
+      });
+      if (snapshot.item_id === 'scouter') {
+        this.toast = { text: 'Scouter ativado! PLs visiveis no mapa.', t: 3 };
+      }
+    } else if (snapshot.action === 'use_item') {
+      chip.sfx('heal');
+    } else if (snapshot.action === 'collect_ball') {
+      chip.sfx('coin');
+      this.addChat({
+        name: 'Sistema',
+        text: `Esfera do Dragão encontrada! (${this.player.balls.length}/7)`,
+        color: '#f8a020',
+        sys: true,
+      });
+      if (previousBallCount < 7 && this.player.balls.length >= 7 && this.state === 'world') {
+        this.startDragon();
+      }
+    } else if (snapshot.action === 'quest_intro') {
+      chip.sfx('levelup');
+      this.toast = { text: `SAGA ${this.player.sagaCycle} · MISSÃO INICIADA!`, t: 3 };
+      const nextQuest = QUESTS[this.player.questIdx];
+      if (nextQuest) {
+        this.addChat({
+          name: 'Quest',
+          text: `Saga ${this.player.sagaCycle}: ${nextQuest.title}`,
+          color: '#88c8f8',
+          sys: true,
+        });
+      }
+    } else if (snapshot.action === 'wish') {
+      if (snapshot.wish === 'power') this.toast = { text: 'ATK permanentemente aumentado!', t: 3.5 };
+      else if (snapshot.wish === 'defense') this.toast = { text: 'DEF permanentemente aumentada!', t: 3.5 };
+      else this.toast = { text: '+5.000 zeni!', t: 3.5 };
+
+      this.addChat({
+        name: 'Shenlong',
+        text: 'Seu desejo foi realizado. As esferas se espalharam pelo mundo novamente...',
+        color: '#88c8f8',
+        sys: true,
+      });
+      this.state = 'world';
+      chip.playSong('field');
+    }
+
+    if (snapshot.saga_completed || this.player.sagaCycle > previousSaga) {
+      chip.sfx('levelup');
+      this.toast = {
+        text: `SAGA ${Math.max(1, this.player.sagaCycle - 1)} COMPLETA! SAGA ${this.player.sagaCycle} LIBERADA!`,
+        t: 4,
+      };
+      this.addChat({
+        name: 'Saga',
+        text: `A sequência recomeçou. Fale com o Mestre Kame para iniciar a Saga ${this.player.sagaCycle}.`,
+        color: '#f8d030',
+        sys: true,
+      });
+    } else if (snapshot.quest_completed) {
+      chip.sfx('levelup');
+      this.toast = { text: 'MISSÃO COMPLETA!', t: 3 };
+    }
+  }
+
   setMobSnapshot(mobs: Array<{ spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }>) {
     this.spawns = mobs.map((mob) => ({
       spawnId: mob.spawnId,
