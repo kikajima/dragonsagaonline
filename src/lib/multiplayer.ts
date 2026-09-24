@@ -100,6 +100,11 @@ export interface MultiplayerPveVictoryConfirmed {
   battleId: string;
   spawnId: string;
   enemyId: string;
+  previousQuestIdx: number;
+  questIdx: number;
+  questProgress: number;
+  sagaCycle: number;
+  questCompleted: boolean;
 }
 
 export interface MultiplayerPveRewardError {
