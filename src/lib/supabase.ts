@@ -32,18 +32,32 @@ export interface CharacterRow {
   map_id: string;
   x: number;
   y: number;
+  base_atk: number;
+  base_def: number;
+  items: Record<string, number>;
+  gear_owned: string[];
+  dragon_balls: string[];
+  flags: Record<string, boolean>;
+  quest_index: number;
+  quest_progress: number;
+  saga_cycle: number;
   state: Record<string, unknown>;
   last_played_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
-export type CharacterPayload = Omit<
-  CharacterRow,
-  'id' | 'created_at' | 'updated_at' | 'last_played_at'
-> & {
+export interface CharacterPayload {
+  user_id: string;
+  name: string;
+  class_id: string;
+  hp: number;
+  ki: number;
+  map_id: string;
+  x: number;
+  y: number;
   last_played_at: string;
-};
+}
 
 type AuthPayload = {
   access_token?: string;
@@ -359,7 +373,6 @@ export async function updateCharacter(
     ...(typeof payload.map_id === 'string' ? { map_id: payload.map_id } : {}),
     ...(typeof payload.x === 'number' ? { x: payload.x } : {}),
     ...(typeof payload.y === 'number' ? { y: payload.y } : {}),
-    ...(payload.state ? { state: payload.state } : {}),
     ...(typeof payload.last_played_at === 'string'
       ? { last_played_at: payload.last_played_at }
       : {}),
