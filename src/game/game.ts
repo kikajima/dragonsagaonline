@@ -283,6 +283,22 @@ export class Game {
     this.multiplayerSessionId = sessionId;
   }
 
+  reconcileServerPosition(
+    x: number,
+    y: number,
+    dir: 'down' | 'up' | 'left' | 'right',
+  ) {
+    if (this.state !== 'world') return;
+    const distance = Math.hypot(x - this.px, y - this.py);
+    if (distance > 8) {
+      this.px = x;
+      this.py = y;
+      this.player.x = x;
+      this.player.y = y;
+      this.pdir = dir;
+    }
+  }
+
   setPvpAttackHandler(cb: ((targetSessionId: string) => void) | null) {
     this.pvpAttackHandler = cb;
   }
