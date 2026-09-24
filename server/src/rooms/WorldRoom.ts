@@ -569,8 +569,9 @@ export class WorldRoom extends Room {
     const delays = [0, 250, 700, 1400];
 
     for (let attempt = 0; attempt < delays.length; attempt++) {
-      if (delays[attempt] > 0) {
-        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      const delay = delays[attempt] ?? 0;
+      if (delay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
 
       try {
