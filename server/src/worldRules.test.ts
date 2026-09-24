@@ -33,7 +33,7 @@ test("battle validation duration stays bounded", () => {
     level: 5,
     gearOwned: [],
   });
-  const duration = minimumBattleDurationMs(ENEMY_RULES.saiba, stats);
+  const duration = minimumBattleDurationMs(ENEMY_RULES.saiba!, stats);
   assert.ok(duration >= 1800);
   assert.ok(duration <= 12000);
 });
