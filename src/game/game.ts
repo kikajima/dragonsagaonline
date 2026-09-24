@@ -151,6 +151,7 @@ export class Game {
   pendingWorldActions = new Set<string>();
   activePveBattleId = '';
   activePveSpawnId = '';
+  pendingPveRewards = new Set<string>();
   pendingPveSpawnId = '';
   pvpHp = 0;
   pvpMaxHp = 0;
@@ -305,6 +306,7 @@ export class Game {
       this.pvpKnockedOut = false;
       this.activePveBattleId = '';
       this.activePveSpawnId = '';
+      this.pendingPveRewards.clear();
       this.pendingPveSpawnId = '';
       this.pveActionHandler = null;
       this.worldActionHandler = null;
@@ -746,6 +748,46 @@ export class Game {
     });
   }
 
+  receivePveVictoryConfirmed(event: {
+    battleId: string;
+    spawnId: string;
+    enemyId: string;
+  }) {
+    if (!event?.battleId) return;
+
+    this.pendingPveRewards.add(event.battleId);
+    if (this.activePveBattleId === event.battleId) {
+      this.activePveBattleId = '';
+      this.activePveSpawnId = '';
+    }
+    this.pendingPveSpawnId = '';
+
+    const spawn = this.spawns.find((item) => item.spawnId === event.spawnId);
+    if (spawn) {
+      spawn.dead = true;
+      spawn.respawnT = Math.max(spawn.respawnT, spawn.isBoss ? 90 : 18);
+    }
+    if (this.activeBoss?.spawnId === event.spawnId) this.activeBoss = null;
+
+    this.toast = { text: 'VITÓRIA CONFIRMADA!', t: 1.2 };
+  }
+
+  receivePveRewardError(event: { battleId: string; message: string }) {
+    if (!event?.battleId) return;
+    this.pendingPveRewards.delete(event.battleId);
+    this.addChat({
+      name: 'Sistema',
+      text: event.message || 'A recompensa ainda não conseguiu sincronizar.',
+      color: '#f8a020',
+      sys: true,
+    });
+    this.toast = { text: 'Recompensa pendente de sincronização.', t: 2.5 };
+  }
+
+  receiveWorldActionPending(message = 'Sincronizando a última vitória...') {
+    this.toast = { text: message, t: 1.5 };
+  }
+
   receivePveState(event: {
     battleId: string;
     playerHp: number;
@@ -797,13 +839,19 @@ export class Game {
       quest_completed?: boolean;
     };
   }) {
-    if (!event?.battleId || event.battleId !== this.activePveBattleId) return;
+    if (!event?.battleId) return;
+    const isCurrentBattle = event.battleId === this.activePveBattleId;
+    const isPendingReward = this.pendingPveRewards.has(event.battleId);
+    if (!isCurrentBattle && !(event.outcome === 'win' && isPendingReward)) return;
 
     const previousLevel = this.player.lv;
     const previousQuestIdx = this.player.questIdx;
-    this.activePveBattleId = '';
-    this.activePveSpawnId = '';
-    this.pendingPveSpawnId = '';
+    if (isCurrentBattle) {
+      this.activePveBattleId = '';
+      this.activePveSpawnId = '';
+      this.pendingPveSpawnId = '';
+    }
+    this.pendingPveRewards.delete(event.battleId);
 
     if (event.outcome === 'win' && event.character) {
       this.applyAuthoritativeCharacter(event.character);
