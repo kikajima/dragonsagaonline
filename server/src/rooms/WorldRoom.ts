@@ -415,8 +415,16 @@ export class WorldRoom extends Room {
       if (!enemy) return;
 
       const now = Date.now();
-      if (this.encounters.has(client.sessionId)) {
-        return client.send("pve_error", { message: "Você já está em uma batalha." });
+      const existingEncounter = this.encounters.get(client.sessionId);
+      if (existingEncounter) {
+        const existingMob = this.mobs.get(existingEncounter.spawnId);
+        if (existingMob && existingMob.engagedUntil <= now) {
+          existingMob.engagedBy = null;
+          existingMob.engagedUntil = 0;
+          this.encounters.delete(client.sessionId);
+        } else {
+          return client.send("pve_error", { message: "Você já está em uma batalha." });
+        }
       }
       if (mob.dead) return client.send("pve_error", { message: "Esse inimigo já foi derrotado." });
       if (mob.engagedBy && mob.engagedBy !== client.sessionId && mob.engagedUntil > now) {
@@ -587,7 +595,7 @@ export class WorldRoom extends Room {
       });
     },
 
-    pve_complete: (client: Client, payload: PveCompletePayload) => {
+    pve_complete: async (client: Client, payload: PveCompletePayload) => {
       const player = this.players.get(client.sessionId);
       const encounter = this.encounters.get(client.sessionId);
       if (!player || !encounter || payload?.battleId !== encounter.battleId) return;
@@ -611,11 +619,19 @@ export class WorldRoom extends Room {
           encounter.outcome === "fled" ? "fled" :
           requestedOutcome;
 
+        if (outcome === "lose") {
+          player.combatHp = Math.max(1, Math.floor(player.maxHp / 2));
+          player.combatKi = Math.max(0, Math.floor(player.maxKi / 2));
+        } else {
+          player.combatHp = Math.max(1, encounter.playerHp);
+          player.combatKi = Math.max(0, encounter.playerKi);
+        }
+
         client.send("pve_result", {
           outcome,
           battleId: encounter.battleId,
-          hp: Math.max(1, encounter.playerHp),
-          ki: Math.max(0, encounter.playerKi),
+          hp: player.combatHp,
+          ki: player.combatKi,
         });
         return;
       }
