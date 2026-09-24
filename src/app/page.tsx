@@ -512,7 +512,14 @@ export default function Home() {
   }, []);
 
   const touchAction = useCallback((key: string) => {
-    gameRef.current?.touchKey(key);
+    const game = gameRef.current;
+    if (!game) return;
+
+    game.clearTouchVector();
+    joystickPointerRef.current = null;
+    joystickDirectionRef.current = null;
+    setStickPosition({ x: 0, y: 0 });
+    game.touchKey(key);
   }, []);
 
   const openTouchChat = useCallback(() => {
@@ -721,7 +728,7 @@ export default function Home() {
           tabIndex={0}
         />
 
-        {touchControls && !showName && (
+        {touchControls && !showName && !showChat && (
           <div
             className="absolute inset-0 z-20"
             style={{
