@@ -26,12 +26,14 @@ interface CharacterRecord {
 
 interface AuthData {
   userId: string;
+  accessToken: string;
   character: CharacterRecord;
 }
 
 interface OnlinePlayer {
   sessionId: string;
   userId: string;
+  accessToken: string;
   characterId: string;
   name: string;
   classId: string;
@@ -153,6 +155,59 @@ function supabaseConfig() {
   return { url, publishableKey };
 }
 
+interface RewardCharacterSnapshot {
+  id: string;
+  level: number;
+  xp: number;
+  gold: number;
+  hp: number;
+  ki: number;
+  state: Record<string, unknown>;
+  quest_completed?: boolean;
+}
+
+async function applyAuthoritativeReward(
+  player: OnlinePlayer,
+  enemyId: string,
+  exp: number,
+  zeni: number,
+  drop: string | null,
+  hp: number,
+  ki: number,
+): Promise<RewardCharacterSnapshot> {
+  const { url, publishableKey } = supabaseConfig();
+  const serverSecret = process.env.PVE_SERVER_SECRET;
+  if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
+
+  const response = await fetch(`${url}/rest/v1/rpc/apply_pve_reward`, {
+    method: "POST",
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${player.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_character_id: player.characterId,
+      p_claim_id: crypto.randomUUID(),
+      p_enemy_id: enemyId,
+      p_exp: exp,
+      p_zeni: zeni,
+      p_drop: drop,
+      p_hp: hp,
+      p_ki: ki,
+      p_server_secret: serverSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase reward RPC failed: ${response.status} ${detail}`);
+  }
+
+  return (await response.json()) as RewardCharacterSnapshot;
+}
+
 async function loadOwnedCharacter(token: string, characterId: string): Promise<CharacterRecord | null> {
   const { url, publishableKey } = supabaseConfig();
   const query =
@@ -197,7 +252,7 @@ export class WorldRoom extends Room {
     if (!characterId) throw new ServerError(400, "characterId is required.");
     const character = await loadOwnedCharacter(token, characterId);
     if (!character) throw new ServerError(403, "Character not found or not owned by this account.");
-    return { userId: character.user_id, character };
+    return { userId: character.user_id, accessToken: token, character };
   }
 
   private updateMobs(dtMs: number) {
@@ -340,19 +395,54 @@ export class WorldRoom extends Room {
       mob.vx = 0;
       mob.vy = 0;
       const drop = enemy.drop && Math.random() < enemy.drop.chance ? enemy.drop.id : null;
-      this.broadcast("mob_update", publicMob(mob));
+      const hp = Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp)));
+      const ki = Math.max(0, Math.floor(numberFrom(payload?.ki, 0)));
 
-      client.send("pve_result", {
-        outcome: "win",
-        battleId: encounter.battleId,
-        spawnId: mob.spawnId,
-        enemyId: mob.enemyId,
-        exp: enemy.exp,
-        zeni: enemy.zeni,
-        drop,
-        hp: Math.max(1, Math.floor(numberFrom(payload?.hp, player.pvpMaxHp))),
-        ki: Math.max(0, Math.floor(numberFrom(payload?.ki, 0))),
-      });
+      try {
+        const character = await applyAuthoritativeReward(
+          player,
+          enemy.id,
+          enemy.exp,
+          enemy.zeni,
+          drop,
+          hp,
+          ki,
+        );
+
+        player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
+        const state = character.state || {};
+        const stats = computeCharacterStats({
+          classId: player.classId,
+          level: player.level,
+          baseAtk: numberFrom(state.baseAtk, 0),
+          baseDef: numberFrom(state.baseDef, 0),
+          gearOwned: stringArray(state.gearOwned),
+        });
+        player.attack = stats.attack;
+        player.defense = stats.defense;
+        player.pvpMaxHp = stats.maxHp;
+        player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
+
+        mob.dead = true;
+        mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
+        mob.vx = 0;
+        mob.vy = 0;
+        this.broadcast("mob_update", publicMob(mob));
+
+        client.send("pve_result", {
+          outcome: "win",
+          battleId: encounter.battleId,
+          spawnId: mob.spawnId,
+          enemyId: mob.enemyId,
+          exp: enemy.exp,
+          zeni: enemy.zeni,
+          drop,
+          character,
+        });
+      } catch (error) {
+        console.error("[pve_reward]", error);
+        client.send("pve_error", { message: "Não foi possível confirmar a recompensa. Tente novamente." });
+      }
     },
 
     pvp_attack: (client: Client, payload: PvpAttackPayload) => {
@@ -408,6 +498,7 @@ export class WorldRoom extends Room {
     const player: OnlinePlayer = {
       sessionId: client.sessionId,
       userId: auth.userId,
+      accessToken: auth.accessToken,
       characterId: character.id,
       name: character.name,
       classId: character.class_id,
