@@ -289,7 +289,6 @@ export class Game {
   }
 
   setMobSnapshot(mobs: Array<{ spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }>) {
-    if (!this.multiplayerActive) return;
     this.spawns = mobs.map((mob) => ({
       spawnId: mob.spawnId,
       enemyId: mob.enemyId,
@@ -309,7 +308,6 @@ export class Game {
   }
 
   upsertMob(mob: { spawnId: string; enemyId: string; x: number; y: number; dead: boolean; isBoss: boolean; respawnAt: number }) {
-    if (!this.multiplayerActive) return;
     const existing = this.spawns.find((spawn) => spawn.spawnId === mob.spawnId);
     if (!existing) {
       this.spawns.push({
