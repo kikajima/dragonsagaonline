@@ -37,6 +37,39 @@ export interface MultiplayerPvpError {
   message: string;
 }
 
+export interface MultiplayerMob {
+  spawnId: string;
+  enemyId: string;
+  x: number;
+  y: number;
+  dead: boolean;
+  isBoss: boolean;
+  respawnAt: number;
+}
+
+export interface MultiplayerPveBegin {
+  battleId: string;
+  spawnId: string;
+  enemyId: string;
+  isBoss: boolean;
+}
+
+export interface MultiplayerPveResult {
+  outcome: 'win' | 'fled' | 'lose';
+  battleId: string;
+  spawnId?: string;
+  enemyId?: string;
+  exp?: number;
+  zeni?: number;
+  drop?: string | null;
+  hp?: number;
+  ki?: number;
+}
+
+export interface MultiplayerPveError {
+  message: string;
+}
+
 export type MultiplayerStatus =
   | 'disabled'
   | 'connecting'
@@ -130,6 +163,11 @@ export interface MultiplayerCallbacks {
   onPvpKo?: (event: MultiplayerPvpKo) => void;
   onPvpRespawn?: (player: MultiplayerPlayer) => void;
   onPvpError?: (event: MultiplayerPvpError) => void;
+  onMobSnapshot?: (mobs: MultiplayerMob[]) => void;
+  onMobUpdate?: (mob: MultiplayerMob) => void;
+  onPveBegin?: (event: MultiplayerPveBegin) => void;
+  onPveResult?: (event: MultiplayerPveResult) => void;
+  onPveError?: (event: MultiplayerPveError) => void;
 }
 
 export interface MultiplayerConnection {
@@ -141,6 +179,13 @@ export interface MultiplayerConnection {
   ): void;
   sendChat(text: string): void;
   sendPvpAttack(targetSessionId: string): void;
+  sendPveBegin(spawnId: string): void;
+  sendPveComplete(payload: {
+    battleId: string;
+    outcome: 'win' | 'fled' | 'lose';
+    hp: number;
+    ki: number;
+  }): void;
   leave(): Promise<void>;
 }
 
@@ -232,6 +277,30 @@ export async function connectMultiplayer(options: {
     options.callbacks?.onPvpError?.(event);
   });
 
+  room.onMessage('mob_snapshot', (mobs: MultiplayerMob[]) => {
+    options.callbacks?.onMobSnapshot?.(Array.isArray(mobs) ? mobs : []);
+  });
+
+  room.onMessage('mob_update', (mob: MultiplayerMob) => {
+    if (!mob) return;
+    options.callbacks?.onMobUpdate?.(mob);
+  });
+
+  room.onMessage('pve_begin', (event: MultiplayerPveBegin) => {
+    if (!event) return;
+    options.callbacks?.onPveBegin?.(event);
+  });
+
+  room.onMessage('pve_result', (event: MultiplayerPveResult) => {
+    if (!event) return;
+    options.callbacks?.onPveResult?.(event);
+  });
+
+  room.onMessage('pve_error', (event: MultiplayerPveError) => {
+    if (!event) return;
+    options.callbacks?.onPveError?.(event);
+  });
+
   room.onLeave(() => {
     options.callbacks?.onStatus?.('offline');
   });
@@ -263,6 +332,17 @@ export async function connectMultiplayer(options: {
       const target = targetSessionId.trim();
       if (!target || target === ownSessionId) return;
       room.send('pvp_attack', { targetSessionId: target });
+    },
+
+    sendPveBegin(spawnId) {
+      const id = spawnId.trim();
+      if (!id) return;
+      room.send('pve_begin', { spawnId: id });
+    },
+
+    sendPveComplete(payload) {
+      if (!payload?.battleId) return;
+      room.send('pve_complete', payload);
     },
 
     async leave() {
