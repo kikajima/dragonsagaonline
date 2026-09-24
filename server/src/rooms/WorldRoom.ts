@@ -494,7 +494,7 @@ export class WorldRoom extends Room {
         nextWanderAt: Date.now() + Math.random() * 2000,
       });
     }
-    this.setSimulationInterval((dt) => this.updateMobs(dt), 100);
+    this.setSimulationInterval((dt) => this.updateMobs(dt), 50);
   }
 
   static async onAuth(token: string, options: { characterId?: string }): Promise<AuthData> {
@@ -577,13 +577,19 @@ export class WorldRoom extends Room {
       if (canWalk(mob.x, ny)) mob.y = ny; else mob.vy = -mob.vy;
       changed = changed || Math.abs(mob.vx) + Math.abs(mob.vy) > 0.01;
     }
-    if (changed && now - this.lastMobBroadcastAt >= 250) {
+    if (changed && now - this.lastMobBroadcastAt >= 100) {
       this.lastMobBroadcastAt = now;
       this.broadcast("mob_snapshot", Array.from(this.mobs.values(), publicMob));
     }
   }
 
   messages = {
+    ping: (client: Client, payload: { clientTime?: number }) => {
+      const clientTime = Number(payload?.clientTime);
+      if (!Number.isFinite(clientTime)) return;
+      client.send("pong", { clientTime, serverTime: Date.now() });
+    },
+
     auth_refresh: async (client: Client, payload: { accessToken?: string }) => {
       const player = this.players.get(client.sessionId);
       const accessToken = String(payload?.accessToken || "").trim();
