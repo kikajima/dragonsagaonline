@@ -46,6 +46,7 @@ interface OnlinePlayer {
   sagaCycle: number;
   questIdx: number;
   questProgress: number;
+  questRevision: number;
   attack: number;
   defense: number;
   maxHp: number;
@@ -589,6 +590,8 @@ export class WorldRoom extends Room {
     const hp = Math.max(1, encounter.playerHp);
     const ki = Math.max(0, encounter.playerKi);
     const quest = applyProvisionalQuestProgress(player, encounter.enemyId);
+    player.questRevision += 1;
+    const questRevision = player.questRevision;
 
     this.encounters.delete(client.sessionId);
     mob.engagedBy = null;
@@ -628,6 +631,7 @@ export class WorldRoom extends Room {
         drop,
         hp,
         ki,
+        questRevision,
       ),
     );
   }
@@ -666,6 +670,7 @@ export class WorldRoom extends Room {
     drop: string | null,
     hp: number,
     ki: number,
+    questRevision: number,
   ) {
     const delays = [0, 250, 700, 1400];
 
@@ -688,7 +693,40 @@ export class WorldRoom extends Room {
         );
 
         const current = this.players.get(sessionId);
-        if (current === player) syncOnlinePlayer(player, character);
+        let characterForClient = character;
+
+        if (current === player) {
+          const hasNewerQuestState = player.questRevision > questRevision;
+          const preservedQuest = hasNewerQuestState
+            ? {
+                questIdx: player.questIdx,
+                questProgress: player.questProgress,
+                sagaCycle: player.sagaCycle,
+                flags: { ...player.flags },
+              }
+            : null;
+
+          syncOnlinePlayer(player, character);
+
+          if (preservedQuest) {
+            player.questIdx = preservedQuest.questIdx;
+            player.questProgress = preservedQuest.questProgress;
+            player.sagaCycle = preservedQuest.sagaCycle;
+            player.flags = { ...player.flags, ...preservedQuest.flags };
+            player.canSuper = Boolean(player.flags.super) || player.level >= 12;
+
+            characterForClient = {
+              ...character,
+              state: {
+                ...(character.state || {}),
+                questIdx: player.questIdx,
+                questProgress: player.questProgress,
+                sagaCycle: player.sagaCycle,
+                flags: player.flags,
+              },
+            };
+          }
+        }
 
         this.clientBySessionId(sessionId)?.send("pve_result", {
           outcome: "win",
@@ -701,7 +739,7 @@ export class WorldRoom extends Room {
           difficultyMultiplier: encounter.difficultyMultiplier,
           rewardMultiplier: encounter.rewardMultiplier,
           drop,
-          character,
+          character: characterForClient,
         });
         return;
       } catch (error) {
@@ -1446,6 +1484,7 @@ export class WorldRoom extends Room {
       sagaCycle: Math.max(0, Math.floor(numberFrom(state.sagaCycle, 0))),
       questIdx: Math.max(0, Math.floor(numberFrom(state.questIdx, 0))),
       questProgress: Math.max(0, Math.floor(numberFrom(state.questProgress, 0))),
+      questRevision: 0,
       attack: stats.attack,
       defense: stats.defense,
       maxHp: stats.maxHp,
