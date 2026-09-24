@@ -410,6 +410,16 @@ export default function Home() {
       }, 2500);
     };
 
+    const cacheCharacterSnapshot = (snapshot: MultiplayerPveCharacter) => {
+      const current = characterRef.current;
+      if (!current || current.id !== snapshot.id) return;
+      const merged = mergeCharacterSnapshot(current, snapshot);
+      characterRef.current = merged;
+      setCharacterOptions((options) =>
+        options.map((row) => (row.id === merged.id ? merged : row)),
+      );
+    };
+
     setMultiplayerStatus('connecting');
     setMultiplayerMessage('');
 
@@ -476,7 +486,9 @@ export default function Home() {
           if (!cancelled) game.receivePveBegin(event);
         },
         onPveResult(event) {
-          if (!cancelled) game.receivePveResult(event);
+          if (cancelled) return;
+          if (event.character) cacheCharacterSnapshot(event.character);
+          game.receivePveResult(event);
         },
         onPveState(event) {
           if (!cancelled) game.receivePveState(event);
@@ -485,6 +497,18 @@ export default function Home() {
           if (cancelled) return;
           game.pendingPveSpawnId = '';
           game.toast = { text: event.message || 'Batalha indisponível.', t: 1.4 };
+        },
+        onCharacterSync(character) {
+          if (cancelled) return;
+          cacheCharacterSnapshot(character);
+          game.receiveCharacterSync(character);
+        },
+        onActionError(event) {
+          if (cancelled) return;
+          game.toast = {
+            text: event.message || 'Ação indisponível no servidor.',
+            t: 1.8,
+          };
         },
       },
     })
@@ -504,6 +528,12 @@ export default function Home() {
           (spawnId) => multiplayerRef.current?.sendPveBegin(spawnId),
           (payload) => multiplayerRef.current?.sendPveAction(payload),
           (payload) => multiplayerRef.current?.sendPveComplete(payload),
+        );
+        game.setWorldActionHandlers(
+          (itemId) => multiplayerRef.current?.sendShopPurchase(itemId),
+          (itemId) => multiplayerRef.current?.sendUseItem(itemId),
+          () => multiplayerRef.current?.sendQuestInteract(),
+          (wish) => multiplayerRef.current?.sendDragonWish(wish),
         );
         setMultiplayerStatus('online');
         setMultiplayerMessage('');
@@ -567,6 +597,7 @@ export default function Home() {
       multiplayerRef.current = null;
       game.setPvpAttackHandler(null);
       game.setPveHandlers(null, null, null);
+      game.setWorldActionHandlers(null, null, null, null);
       game.setMultiplayerSessionId('');
       game.setMultiplayerActive(false);
 
