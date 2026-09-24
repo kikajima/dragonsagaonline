@@ -113,6 +113,10 @@ interface PveCompletePayload {
   hp?: number;
   ki?: number;
 }
+interface WorldActionPayload {
+  action?: "shop_buy" | "world_item" | "collect_ball" | "wish" | "master_quest";
+  arg?: string;
+}
 
 const DIRECTIONS = new Set<Direction>(["down","up","left","right"]);
 const MAX_CHAT_LENGTH = 80;
@@ -253,6 +257,69 @@ async function applyAuthoritativeReward(
   }
 
   return (await response.json()) as RewardCharacterSnapshot;
+}
+
+async function applyWorldAction(
+  player: OnlinePlayer,
+  action: NonNullable<WorldActionPayload["action"]>,
+  arg: string,
+  hp: number,
+  ki: number,
+): Promise<RewardCharacterSnapshot> {
+  const { url, publishableKey } = supabaseConfig();
+  const serverSecret = process.env.PVE_SERVER_SECRET;
+  if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
+
+  const response = await fetch(`${url}/rest/v1/rpc/apply_world_action`, {
+    method: "POST",
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${player.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_character_id: player.characterId,
+      p_action: action,
+      p_arg: arg,
+      p_hp: hp,
+      p_ki: ki,
+      p_server_secret: serverSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase world action RPC failed: ${response.status} ${detail}`);
+  }
+
+  return (await response.json()) as RewardCharacterSnapshot;
+}
+
+function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapshot) {
+  const state = character.state || {};
+  player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
+  player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, player.combatHp)));
+  player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, player.combatKi)));
+  player.flags = objectRecord(state.flags);
+  player.items = numberRecord(state.items);
+  player.canSuper = Boolean(player.flags.super) || player.level >= 12;
+
+  const stats = computeCharacterStats({
+    classId: player.classId,
+    level: player.level,
+    baseAtk: numberFrom(state.baseAtk, 0),
+    baseDef: numberFrom(state.baseDef, 0),
+    gearOwned: stringArray(state.gearOwned),
+  });
+  player.attack = stats.attack;
+  player.defense = stats.defense;
+  player.maxHp = stats.maxHp;
+  player.maxKi = stats.maxKi;
+  player.combatHp = Math.min(player.combatHp, player.maxHp);
+  player.combatKi = Math.min(player.combatKi, player.maxKi);
+  player.pvpMaxHp = stats.maxHp;
+  player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
 }
 
 async function validateAccessTokenUser(token: string): Promise<string | null> {
@@ -412,6 +479,63 @@ export class WorldRoom extends Room {
       const text = String(payload?.text || "").replace(/\s+/g, " ").trim().slice(0, MAX_CHAT_LENGTH);
       if (!text) return;
       this.broadcast("chat", { sessionId: player.sessionId, name: player.name, text }, { except: client });
+    },
+
+    world_action: async (client: Client, payload: WorldActionPayload) => {
+      const player = this.players.get(client.sessionId);
+      if (!player || this.encounters.has(client.sessionId)) return;
+
+      const action = payload?.action;
+      const arg = String(payload?.arg || "");
+      if (!action) return;
+
+      let hp = player.combatHp;
+      let ki = player.combatKi;
+
+      if (action === "shop_buy") {
+        if (Math.hypot(player.x - 32 * 16, player.y - 31 * 16) > 64) {
+          return client.send("world_action_error", { action, message: "Chegue mais perto da loja." });
+        }
+      } else if (action === "master_quest") {
+        if (Math.hypot(player.x - 92 * 16, player.y - 74 * 16) > 64) {
+          return client.send("world_action_error", { action, message: "Fale com o Mestre Kame de perto." });
+        }
+      } else if (action === "collect_ball") {
+        const [tx, ty] = arg.split(",").map(Number);
+        if (!Number.isFinite(tx) || !Number.isFinite(ty)) return;
+        if (Math.hypot(player.x - (tx * 16 + 8), player.y - (ty * 16 + 8)) > 34) {
+          return client.send("world_action_error", { action, message: "Chegue mais perto da Esfera do Dragão." });
+        }
+      } else if (action === "world_item") {
+        const qty = player.items[arg] || 0;
+        if (qty <= 0) {
+          return client.send("world_action_error", { action, message: "Você não possui esse item." });
+        }
+        if (arg === "sensu") hp = Math.min(player.maxHp, hp + 100);
+        else if (arg === "capsula") ki = Math.min(player.maxKi, ki + 60);
+        else if (arg === "elixir") { hp = player.maxHp; ki = player.maxKi; }
+        else return client.send("world_action_error", { action, message: "Esse item não pode ser usado aqui." });
+      } else if (action === "wish") {
+        hp = player.maxHp;
+        ki = player.maxKi;
+      }
+
+      try {
+        const character = await applyWorldAction(player, action, arg, hp, ki);
+        syncOnlinePlayer(player, character);
+        client.send("world_action_result", { action, arg, character });
+      } catch (error) {
+        console.error("[world_action]", error);
+        const raw = error instanceof Error ? error.message : "";
+        const message =
+          raw.includes("not enough zeni") ? "Zeni insuficiente." :
+          raw.includes("gear already owned") ? "Você já possui esse equipamento." :
+          raw.includes("dragon ball already collected") ? "Essa Esfera já foi coletada." :
+          raw.includes("seven dragon balls required") ? "Você precisa das 7 Esferas do Dragão." :
+          raw.includes("master quest is not active") ? "Essa etapa da saga já foi concluída." :
+          "Não foi possível concluir essa ação.";
+        client.send("world_action_error", { action, message });
+      }
     },
 
     pve_begin: (client: Client, payload: PveBeginPayload) => {
@@ -662,21 +786,7 @@ export class WorldRoom extends Room {
         mob.engagedBy = null;
         mob.engagedUntil = 0;
 
-        player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
-        player.combatHp = Math.max(1, Math.floor(numberFrom(character.hp, hp)));
-        player.combatKi = Math.max(0, Math.floor(numberFrom(character.ki, ki)));
-        const state = character.state || {};
-        const stats = computeCharacterStats({
-          classId: player.classId,
-          level: player.level,
-          baseAtk: numberFrom(state.baseAtk, 0),
-          baseDef: numberFrom(state.baseDef, 0),
-          gearOwned: stringArray(state.gearOwned),
-        });
-        player.attack = stats.attack;
-        player.defense = stats.defense;
-        player.pvpMaxHp = stats.maxHp;
-        player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
+        syncOnlinePlayer(player, character);
 
         mob.dead = true;
         mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
