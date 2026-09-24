@@ -67,8 +67,21 @@ export interface MultiplayerPveCharacter {
   gold: number;
   hp: number;
   ki: number;
-  state: Record<string, unknown>;
+  base_atk: number;
+  base_def: number;
+  items: Record<string, number>;
+  gear_owned: string[];
+  dragon_balls: string[];
+  flags: Record<string, boolean>;
+  quest_index: number;
+  quest_progress: number;
+  saga_cycle: number;
   quest_completed?: boolean;
+  saga_completed?: boolean;
+  action?: string;
+  item_id?: string;
+  ball_key?: string;
+  wish?: string;
 }
 
 export interface MultiplayerPveResult {
@@ -138,6 +151,8 @@ export interface MultiplayerCallbacks {
   onPveResult?: (event: MultiplayerPveResult) => void;
   onPveState?: (event: MultiplayerPveState) => void;
   onPveError?: (event: MultiplayerPveError) => void;
+  onCharacterSync?: (character: MultiplayerPveCharacter) => void;
+  onActionError?: (event: { action?: string; message?: string }) => void;
 }
 
 export interface MultiplayerConnection {
@@ -151,6 +166,10 @@ export interface MultiplayerConnection {
   sendChat(text: string): void;
   updateAuthToken(accessToken: string): void;
   sendPvpAttack(targetSessionId: string): void;
+  sendShopPurchase(itemId: string): void;
+  sendUseItem(itemId: string): void;
+  sendQuestInteract(): void;
+  sendDragonWish(wish: 'power' | 'defense' | 'zeni'): void;
   sendPveBegin(spawnId: string): void;
   sendPveAction(payload: {
     battleId: string;
@@ -300,6 +319,16 @@ export async function connectMultiplayer(options: {
     options.callbacks?.onPveError?.(event);
   });
 
+  room.onMessage('character_sync', (character: MultiplayerPveCharacter) => {
+    if (!character) return;
+    options.callbacks?.onCharacterSync?.(character);
+  });
+
+  room.onMessage('action_error', (event: { action?: string; message?: string }) => {
+    if (!event) return;
+    options.callbacks?.onActionError?.(event);
+  });
+
   room.onLeave(() => {
     options.callbacks?.onStatus?.('offline');
   });
@@ -337,6 +366,26 @@ export async function connectMultiplayer(options: {
       const target = targetSessionId.trim();
       if (!target || target === ownSessionId) return;
       room.send('pvp_attack', { targetSessionId: target });
+    },
+
+    sendShopPurchase(itemId) {
+      const id = itemId.trim();
+      if (!id) return;
+      room.send('shop_purchase', { itemId: id });
+    },
+
+    sendUseItem(itemId) {
+      const id = itemId.trim();
+      if (!id) return;
+      room.send('use_item', { itemId: id });
+    },
+
+    sendQuestInteract() {
+      room.send('quest_interact');
+    },
+
+    sendDragonWish(wish) {
+      room.send('dragon_wish', { wish });
     },
 
     sendPveBegin(spawnId) {
