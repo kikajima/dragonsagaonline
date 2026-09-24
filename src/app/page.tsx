@@ -24,6 +24,7 @@ import {
 import {
   connectMultiplayer,
   type MultiplayerConnection,
+  type MultiplayerPveCharacter,
   type MultiplayerStatus,
 } from '@/lib/multiplayer';
 
@@ -32,9 +33,7 @@ const COLYSEUS_URL =
   'https://dso-world-production.up.railway.app';
 
 function characterToPlayer(row: CharacterRow): Partial<PlayerState> {
-  const state = (row.state || {}) as Partial<PlayerState>;
   return {
-    ...state,
     name: row.name,
     classId: row.class_id,
     lv: row.level,
@@ -42,6 +41,15 @@ function characterToPlayer(row: CharacterRow): Partial<PlayerState> {
     hp: row.hp,
     ki: row.ki,
     zeni: Number(row.gold),
+    baseAtk: row.base_atk,
+    baseDef: row.base_def,
+    items: { ...(row.items || {}) },
+    gearOwned: [...(row.gear_owned || [])],
+    balls: [...(row.dragon_balls || [])],
+    questIdx: row.quest_index,
+    questProgress: row.quest_progress,
+    sagaCycle: Math.max(1, row.saga_cycle || 1),
+    flags: { ...(row.flags || {}) },
     x: row.x,
     y: row.y,
   };
@@ -52,16 +60,36 @@ function playerPayload(userId: string, player: PlayerState) {
     user_id: userId,
     name: player.name,
     class_id: player.classId,
-    level: player.lv,
-    xp: player.exp,
     hp: player.hp,
     ki: player.ki,
-    gold: player.zeni,
     map_id: 'world',
     x: player.x,
     y: player.y,
-    state: player as unknown as Record<string, unknown>,
     last_played_at: new Date().toISOString(),
+  };
+}
+
+function mergeCharacterSnapshot(
+  row: CharacterRow,
+  snapshot: MultiplayerPveCharacter,
+): CharacterRow {
+  return {
+    ...row,
+    level: snapshot.level,
+    xp: snapshot.xp,
+    gold: snapshot.gold,
+    hp: snapshot.hp,
+    ki: snapshot.ki,
+    base_atk: snapshot.base_atk,
+    base_def: snapshot.base_def,
+    items: { ...(snapshot.items || {}) },
+    gear_owned: [...(snapshot.gear_owned || [])],
+    dragon_balls: [...(snapshot.dragon_balls || [])],
+    flags: { ...(snapshot.flags || {}) },
+    quest_index: snapshot.quest_index,
+    quest_progress: snapshot.quest_progress,
+    saga_cycle: snapshot.saga_cycle,
+    updated_at: new Date().toISOString(),
   };
 }
 
