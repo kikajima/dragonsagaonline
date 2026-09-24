@@ -114,7 +114,7 @@ interface PveCompletePayload {
   ki?: number;
 }
 interface WorldActionPayload {
-  action?: "shop_buy" | "world_item" | "collect_ball" | "wish" | "master_quest";
+  action?: "shop_buy" | "world_item" | "collect_ball" | "wish" | "master_quest" | "fountain_heal";
   arg?: string;
 }
 
@@ -214,6 +214,8 @@ interface RewardCharacterSnapshot {
   hp: number;
   ki: number;
   state: Record<string, unknown>;
+  x?: number;
+  y?: number;
   quest_completed?: boolean;
 }
 
@@ -296,6 +298,45 @@ async function applyWorldAction(
   return (await response.json()) as RewardCharacterSnapshot;
 }
 
+async function applyVitalCheckpoint(
+  player: OnlinePlayer,
+  action: "checkpoint" | "fountain_heal" | "pve_defeat" | "pvp_respawn",
+  hp: number,
+  ki: number,
+  x: number,
+  y: number,
+): Promise<RewardCharacterSnapshot> {
+  const { url, publishableKey } = supabaseConfig();
+  const serverSecret = process.env.PVE_SERVER_SECRET;
+  if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
+
+  const response = await fetch(`${url}/rest/v1/rpc/apply_vital_checkpoint`, {
+    method: "POST",
+    headers: {
+      apikey: publishableKey,
+      Authorization: `Bearer ${player.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      p_character_id: player.characterId,
+      p_action: action,
+      p_hp: hp,
+      p_ki: ki,
+      p_x: x,
+      p_y: y,
+      p_server_secret: serverSecret,
+    }),
+  });
+
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`Supabase vital checkpoint RPC failed: ${response.status} ${detail}`);
+  }
+
+  return (await response.json()) as RewardCharacterSnapshot;
+}
+
 function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapshot) {
   const state = character.state || {};
   player.level = Math.max(1, Math.floor(numberFrom(character.level, player.level)));
@@ -320,6 +361,8 @@ function syncOnlinePlayer(player: OnlinePlayer, character: RewardCharacterSnapsh
   player.combatKi = Math.min(player.combatKi, player.maxKi);
   player.pvpMaxHp = stats.maxHp;
   player.pvpHp = Math.min(player.pvpHp, player.pvpMaxHp);
+  if (Number.isFinite(character.x)) player.x = Number(character.x);
+  if (Number.isFinite(character.y)) player.y = Number(character.y);
 }
 
 async function validateAccessTokenUser(token: string): Promise<string | null> {
@@ -520,11 +563,23 @@ export class WorldRoom extends Room {
       } else if (action === "wish") {
         hp = player.maxHp;
         ki = player.maxKi;
+      } else if (action === "fountain_heal") {
+        const nearTownFountain = Math.hypot(player.x - 19 * 16, player.y - 30 * 16) <= 52;
+        const nearTowerSpring = player.x >= 31 * 16 && player.x <= 39 * 16 &&
+          player.y >= 32 * 16 && player.y <= 37 * 16;
+        if (!nearTownFountain && !nearTowerSpring) {
+          return client.send("world_action_error", { action, message: "Chegue mais perto de uma fonte." });
+        }
+        hp = player.maxHp;
+        ki = player.maxKi;
       }
 
       try {
-        const character = await applyWorldAction(player, action, arg, hp, ki);
+        const character = action === "fountain_heal"
+          ? await applyVitalCheckpoint(player, "fountain_heal", hp, ki, player.x, player.y)
+          : await applyWorldAction(player, action, arg, hp, ki);
         syncOnlinePlayer(player, character);
+        if (action === "fountain_heal") player.pvpHp = player.pvpMaxHp;
         client.send("world_action_result", { action, arg, character });
       } catch (error) {
         console.error("[world_action]", error);
@@ -770,20 +825,39 @@ export class WorldRoom extends Room {
           encounter.outcome === "fled" ? "fled" :
           requestedOutcome;
 
-        if (outcome === "lose") {
-          player.combatHp = Math.max(1, Math.floor(player.maxHp / 2));
-          player.combatKi = Math.max(0, Math.floor(player.maxKi / 2));
-        } else {
-          player.combatHp = Math.max(1, encounter.playerHp);
-          player.combatKi = Math.max(0, encounter.playerKi);
-        }
+        const checkpointAction = outcome === "lose" ? "pve_defeat" : "checkpoint";
+        const nextHp = outcome === "lose"
+          ? Math.max(1, Math.floor(player.maxHp / 2))
+          : Math.max(1, encounter.playerHp);
+        const nextKi = outcome === "lose"
+          ? Math.max(0, Math.floor(player.maxKi / 2))
+          : Math.max(0, encounter.playerKi);
+        const nextX = outcome === "lose" ? 19.5 * 16 : player.x;
+        const nextY = outcome === "lose" ? 43.5 * 16 : player.y;
 
-        client.send("pve_result", {
-          outcome,
-          battleId: encounter.battleId,
-          hp: player.combatHp,
-          ki: player.combatKi,
-        });
+        try {
+          const character = await applyVitalCheckpoint(
+            player,
+            checkpointAction,
+            nextHp,
+            nextKi,
+            nextX,
+            nextY,
+          );
+          syncOnlinePlayer(player, character);
+          client.send("pve_result", {
+            outcome,
+            battleId: encounter.battleId,
+            hp: player.combatHp,
+            ki: player.combatKi,
+            x: player.x,
+            y: player.y,
+            character,
+          });
+        } catch (error) {
+          console.error("[pve_checkpoint]", error);
+          client.send("pve_error", { message: "Não foi possível salvar o resultado da batalha." });
+        }
         return;
       }
 
@@ -871,12 +945,30 @@ export class WorldRoom extends Room {
       });
       const id = target.sessionId;
       setTimeout(() => {
-        const current = this.players.get(id);
-        if (!current || current !== target) return;
-        current.pvpHp = current.pvpMaxHp;
-        current.koUntil = 0;
-        current.pvpProtectedUntil = Date.now() + 5000;
-        this.broadcast("pvp_respawn", publicPlayer(current));
+        void (async () => {
+          const current = this.players.get(id);
+          if (!current || current !== target) return;
+          try {
+            const character = await applyVitalCheckpoint(
+              current,
+              "pvp_respawn",
+              Math.max(1, Math.floor(current.maxHp / 2)),
+              Math.max(0, Math.floor(current.maxKi / 2)),
+              19.5 * 16,
+              43.5 * 16,
+            );
+            syncOnlinePlayer(current, character);
+            current.pvpHp = current.pvpMaxHp;
+            current.koUntil = 0;
+            current.pvpProtectedUntil = Date.now() + 5000;
+            this.broadcast("pvp_respawn", {
+              ...publicPlayer(current),
+              character,
+            });
+          } catch (error) {
+            console.error("[pvp_respawn]", error);
+          }
+        })();
       }, PVP_RESPAWN_MS);
     },
   };
@@ -926,7 +1018,8 @@ export class WorldRoom extends Room {
     this.broadcast("presence", { count: this.players.size });
   }
 
-  onLeave(client: Client) {
+  async onLeave(client: Client) {
+    const leavingPlayer = this.players.get(client.sessionId);
     this.players.delete(client.sessionId);
     const encounter = this.encounters.get(client.sessionId);
     if (encounter) {
@@ -936,6 +1029,20 @@ export class WorldRoom extends Room {
         mob.engagedUntil = 0;
       }
       this.encounters.delete(client.sessionId);
+    }
+    if (leavingPlayer) {
+      try {
+        await applyVitalCheckpoint(
+          leavingPlayer,
+          "checkpoint",
+          leavingPlayer.combatHp,
+          leavingPlayer.combatKi,
+          leavingPlayer.x,
+          leavingPlayer.y,
+        );
+      } catch (error) {
+        console.error("[leave_checkpoint]", error);
+      }
     }
     this.broadcast("player_left", { sessionId: client.sessionId });
     this.broadcast("presence", { count: this.players.size });
