@@ -1,3 +1,5 @@
+import { Client } from '@colyseus/sdk';
+
 export interface MultiplayerPlayer {
   sessionId: string;
   name: string;
@@ -98,70 +100,6 @@ interface ColyseusRoom {
   onError(callback: (code: number, message?: string) => void): void;
 }
 
-interface ColyseusClient {
-  auth: { token?: string };
-  joinOrCreate(name: string, options?: Record<string, unknown>): Promise<ColyseusRoom>;
-}
-
-interface ColyseusGlobal {
-  Client: new (endpoint: string) => ColyseusClient;
-}
-
-declare global {
-  interface Window {
-    Colyseus?: ColyseusGlobal;
-  }
-}
-
-const SDK_URL =
-  'https://unpkg.com/@colyseus/sdk@0.18.2/dist/colyseus.js';
-
-let sdkPromise: Promise<ColyseusGlobal> | null = null;
-
-function loadSdk(): Promise<ColyseusGlobal> {
-  if (typeof window === 'undefined') {
-    return Promise.reject(new Error('Colyseus só pode ser carregado no navegador.'));
-  }
-
-  if (window.Colyseus) return Promise.resolve(window.Colyseus);
-  if (sdkPromise) return sdkPromise;
-
-  sdkPromise = new Promise<ColyseusGlobal>((resolve, reject) => {
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[data-dso-colyseus-sdk]',
-    );
-
-    const finish = () => {
-      if (window.Colyseus) {
-        resolve(window.Colyseus);
-      } else {
-        reject(new Error('O SDK do Colyseus foi carregado sem expor window.Colyseus.'));
-      }
-    };
-
-    if (existing) {
-      existing.addEventListener('load', finish, { once: true });
-      existing.addEventListener(
-        'error',
-        () => reject(new Error('Não foi possível carregar o SDK do Colyseus.')),
-        { once: true },
-      );
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.src = SDK_URL;
-    script.async = true;
-    script.dataset.dsoColyseusSdk = 'true';
-    script.onload = finish;
-    script.onerror = () =>
-      reject(new Error('Não foi possível carregar o SDK do Colyseus.'));
-    document.head.appendChild(script);
-  });
-
-  return sdkPromise;
-}
-
 export interface MultiplayerCallbacks {
   onStatus?: (status: MultiplayerStatus, message?: string) => void;
   onSnapshot?: (players: MultiplayerPlayer[]) => void;
@@ -215,16 +153,15 @@ export async function connectMultiplayer(options: {
 
   options.callbacks?.onStatus?.('connecting');
 
-  const Colyseus = await loadSdk();
-  const client = new Colyseus.Client(endpoint);
+  const client = new Client(endpoint);
   client.auth.token = options.accessToken;
 
   let room: ColyseusRoom;
 
   try {
-    room = await client.joinOrCreate('world', {
+    room = (await client.joinOrCreate('world', {
       characterId: options.characterId,
-    });
+    })) as unknown as ColyseusRoom;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Falha ao entrar no mundo online.';
