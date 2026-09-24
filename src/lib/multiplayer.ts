@@ -58,6 +58,9 @@ export interface MultiplayerPveBegin {
   playerKi: number;
   enemyHp: number;
   enemyMaxHp: number;
+  sagaCycle: number;
+  difficultyMultiplier: number;
+  rewardMultiplier: number;
 }
 
 export interface MultiplayerPveCharacter {
@@ -83,6 +86,9 @@ export interface MultiplayerPveResult {
   ki?: number;
   x?: number;
   y?: number;
+  sagaCycle?: number;
+  difficultyMultiplier?: number;
+  rewardMultiplier?: number;
   character?: MultiplayerPveCharacter;
 }
 
