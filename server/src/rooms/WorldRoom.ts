@@ -263,44 +263,54 @@ interface RewardCharacterSnapshot {
 
 async function applyAuthoritativeReward(
   player: OnlinePlayer,
+  claimId: string,
   enemyId: string,
   exp: number,
   zeni: number,
   drop: string | null,
   hp: number,
   ki: number,
+  timeoutMs = 2200,
 ): Promise<RewardCharacterSnapshot> {
   const { url, publishableKey } = supabaseConfig();
   const serverSecret = process.env.PVE_SERVER_SECRET;
   if (!serverSecret) throw new Error("PVE_SERVER_SECRET is required.");
 
-  const response = await fetch(`${url}/rest/v1/rpc/apply_pve_reward`, {
-    method: "POST",
-    headers: {
-      apikey: publishableKey,
-      Authorization: `Bearer ${player.accessToken}`,
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
-    body: JSON.stringify({
-      p_character_id: player.characterId,
-      p_claim_id: crypto.randomUUID(),
-      p_enemy_id: enemyId,
-      p_exp: exp,
-      p_zeni: zeni,
-      p_drop: drop,
-      p_hp: hp,
-      p_ki: ki,
-      p_server_secret: serverSecret,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
-  if (!response.ok) {
-    const detail = await response.text();
-    throw new Error(`Supabase reward RPC failed: ${response.status} ${detail}`);
+  try {
+    const response = await fetch(`${url}/rest/v1/rpc/apply_pve_reward`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        apikey: publishableKey,
+        Authorization: `Bearer ${player.accessToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        p_character_id: player.characterId,
+        p_claim_id: claimId,
+        p_enemy_id: enemyId,
+        p_exp: exp,
+        p_zeni: zeni,
+        p_drop: drop,
+        p_hp: hp,
+        p_ki: ki,
+        p_server_secret: serverSecret,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(`Supabase reward RPC failed: ${response.status} ${detail}`);
+    }
+
+    return (await response.json()) as RewardCharacterSnapshot;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return (await response.json()) as RewardCharacterSnapshot;
 }
 
 async function applyWorldAction(
@@ -486,6 +496,7 @@ export class WorldRoom extends Room {
   private players = new Map<string, OnlinePlayer>();
   private mobs = new Map<string, WorldMob>();
   private encounters = new Map<string, ActiveEncounter>();
+  private rewardQueues = new Map<string, Promise<void>>();
   private trades = new Map<string, ActiveTrade>();
   private lastMobBroadcastAt = 0;
 
@@ -518,6 +529,88 @@ export class WorldRoom extends Room {
 
   private clientBySessionId(sessionId: string): Client | undefined {
     return this.clients.find((client) => client.sessionId === sessionId);
+  }
+
+  private queueReward(sessionId: string, task: () => Promise<void>): Promise<void> {
+    const previous = this.rewardQueues.get(sessionId) || Promise.resolve();
+    let next!: Promise<void>;
+    next = previous
+      .catch(() => undefined)
+      .then(task)
+      .catch((error) => {
+        console.error("[reward_queue]", error);
+      })
+      .finally(() => {
+        if (this.rewardQueues.get(sessionId) === next) {
+          this.rewardQueues.delete(sessionId);
+        }
+      });
+    this.rewardQueues.set(sessionId, next);
+    return next;
+  }
+
+  private async waitForRewards(sessionId: string, client?: Client) {
+    const pending = this.rewardQueues.get(sessionId);
+    if (!pending) return;
+    client?.send("world_action_pending", {
+      message: "Sincronizando a última vitória...",
+    });
+    await pending.catch(() => undefined);
+  }
+
+  private async persistVictoryReward(
+    sessionId: string,
+    player: OnlinePlayer,
+    encounter: ActiveEncounter,
+    drop: string | null,
+    hp: number,
+    ki: number,
+  ) {
+    const delays = [0, 250, 700, 1400];
+
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (delays[attempt] > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+      }
+
+      try {
+        const character = await applyAuthoritativeReward(
+          player,
+          encounter.battleId,
+          encounter.enemyId,
+          encounter.rewardExp,
+          encounter.rewardZeni,
+          drop,
+          hp,
+          ki,
+        );
+
+        const current = this.players.get(sessionId);
+        if (current === player) syncOnlinePlayer(player, character);
+
+        this.clientBySessionId(sessionId)?.send("pve_result", {
+          outcome: "win",
+          battleId: encounter.battleId,
+          spawnId: encounter.spawnId,
+          enemyId: encounter.enemyId,
+          exp: encounter.rewardExp,
+          zeni: encounter.rewardZeni,
+          sagaCycle: encounter.sagaCycle,
+          difficultyMultiplier: encounter.difficultyMultiplier,
+          rewardMultiplier: encounter.rewardMultiplier,
+          drop,
+          character,
+        });
+        return;
+      } catch (error) {
+        console.error(`[pve_reward attempt=${attempt + 1}]`, error);
+      }
+    }
+
+    this.clientBySessionId(sessionId)?.send("pve_reward_error", {
+      battleId: encounter.battleId,
+      message: "A vitória foi liberada, mas a recompensa ainda não conseguiu sincronizar.",
+    });
   }
 
   private tradeForSession(sessionId: string): ActiveTrade | undefined {
@@ -659,6 +752,8 @@ export class WorldRoom extends Room {
     world_action: async (client: Client, payload: WorldActionPayload) => {
       const player = this.players.get(client.sessionId);
       if (!player || this.encounters.has(client.sessionId)) return;
+
+      await this.waitForRewards(client.sessionId, client);
 
       const action = payload?.action;
       const arg = String(payload?.arg || "");
@@ -1136,46 +1231,37 @@ export class WorldRoom extends Room {
       const hp = Math.max(1, encounter.playerHp);
       const ki = Math.max(0, encounter.playerKi);
 
-      try {
-        const character = await applyAuthoritativeReward(
+      // The battle lock is released as soon as the authoritative combat state says
+      // the enemy is defeated. Persistence happens independently afterwards.
+      this.encounters.delete(client.sessionId);
+      mob.engagedBy = null;
+      mob.engagedUntil = 0;
+      player.combatHp = hp;
+      player.combatKi = ki;
+
+      mob.dead = true;
+      mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
+      mob.vx = 0;
+      mob.vy = 0;
+      this.broadcast("mob_update", publicMob(mob));
+
+      client.send("pve_victory_confirmed", {
+        battleId: encounter.battleId,
+        spawnId: mob.spawnId,
+        enemyId: mob.enemyId,
+      });
+
+      this.queueReward(client.sessionId, () =>
+        this.persistVictoryReward(
+          client.sessionId,
           player,
-          enemy.id,
-          encounter.rewardExp,
-          encounter.rewardZeni,
+          encounter,
           drop,
           hp,
           ki,
-        );
-
-        this.encounters.delete(client.sessionId);
-        mob.engagedBy = null;
-        mob.engagedUntil = 0;
-
-        syncOnlinePlayer(player, character);
-
-        mob.dead = true;
-        mob.respawnAt = Date.now() + (mob.isBoss ? 90000 + Math.random() * 60000 : 18000 + Math.random() * 10000);
-        mob.vx = 0;
-        mob.vy = 0;
-        this.broadcast("mob_update", publicMob(mob));
-
-        client.send("pve_result", {
-          outcome: "win",
-          battleId: encounter.battleId,
-          spawnId: mob.spawnId,
-          enemyId: mob.enemyId,
-          exp: encounter.rewardExp,
-          zeni: encounter.rewardZeni,
-          sagaCycle: encounter.sagaCycle,
-          difficultyMultiplier: encounter.difficultyMultiplier,
-          rewardMultiplier: encounter.rewardMultiplier,
-          drop,
-          character,
-        });
-      } catch (error) {
-        console.error("[pve_reward]", error);
-        client.send("pve_error", { message: "Não foi possível confirmar a recompensa. Tente novamente." });
-      }
+        ),
+      );
+      return;
     },
 
     pvp_attack: (client: Client, payload: PvpAttackPayload) => {
