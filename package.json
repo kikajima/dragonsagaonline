@@ -6,7 +6,10 @@
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "cloudflare:check": "bunx vinext check",
+    "cloudflare:setup": "bunx vinext init --platform=cloudflare",
+    "cloudflare:deploy": "bunx wrangler deploy"
   },
   "dependencies": {
     "@colyseus/sdk": "0.18.4",
