@@ -32,4 +32,4 @@ jobs:
         run: bun run build
 
       - name: Verify Cloudflare OpenNext build
-        run: bunx @opennextjs/cloudflare@1.20.6 build
+        run: bun add --no-save @opennextjs/cloudflare@1.20.6 && bunx opennextjs-cloudflare build
