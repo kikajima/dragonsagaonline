@@ -72,6 +72,12 @@ function authError(payload: AuthPayload, fallback: string): Error {
   if (code === 'user_already_exists') {
     return new Error('Já existe uma conta com este e-mail.');
   }
+  if (code === 'over_email_send_rate_limit') {
+    return new Error('Muitas solicitações de e-mail. Aguarde alguns minutos e tente novamente.');
+  }
+  if (code === 'email_address_not_authorized') {
+    return new Error('Este endereço ainda não pode receber e-mails de autenticação.');
+  }
 
   return new Error(
     payload.error_description ||
