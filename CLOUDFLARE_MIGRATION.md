@@ -8,43 +8,45 @@ This branch prepares Dragon Saga Online for migration from Vercel to Cloudflare 
 - Railway: Colyseus multiplayer server
 - Supabase: authentication and persistent game data
 
-## Why this branch does not commit generated vinext files yet
+## Current deployment path
 
-Cloudflare currently recommends vinext for Next.js on Workers. Wrangler can automatically detect an existing Next.js project, install the required adapter, and generate the Worker configuration. The generated setup should be created from the Cloudflare-connected repository so that the Cloudflare account and build settings match the project.
+Cloudflare automatic configuration selected the OpenNext Cloudflare adapter for this existing Next.js application. The first build compiled successfully, but the generated self-reference service binding used the generic package name `nextjs-tailwind-shadcn-ts` instead of the Cloudflare Worker name `dragonsagaonline`.
 
-The repository uses Bun, so the migration keeps `bun.lock` unchanged until the generated Cloudflare configuration is created by the official setup flow.
+This branch now includes an explicit `wrangler.jsonc` where both the Worker name and `WORKER_SELF_REFERENCE` target are `dragonsagaonline`.
 
-## Checks available now
+Wrangler runs the OpenNext build automatically through the custom build command before deployment.
 
-Run:
+## Checks
 
-```bash
-bun run cloudflare:check
-```
+The GitHub Actions workflow verifies:
 
-The branch also contains a GitHub Actions workflow that runs the vinext compatibility scanner and the existing Next.js build.
+1. existing dependencies with the frozen Bun lockfile;
+2. the current Next.js production build;
+3. the Cloudflare OpenNext build.
 
-## Cloudflare connection step
+## Cloudflare project settings
 
-When the compatibility workflow is green:
+Use:
 
-1. Open Cloudflare Dashboard.
-2. Go to Workers & Pages.
-3. Choose Create / Import a repository.
-4. Connect GitHub if prompted.
-5. Select `kikajima/dragonsagaonline`.
-6. Select the `cloudflare-migration` branch for the first deployment.
-7. Use `npx wrangler deploy` as the deploy command if Cloudflare asks for one.
-8. Let Wrangler perform automatic Next.js configuration.
+- Project name: `dragonsagaonline`
+- Deploy command: `npx wrangler deploy`
+- Preview command: `npx wrangler preview`
+- Repository path: `/`
 
-Do not point the production domain at Cloudflare until the preview deployment has been tested.
+The build command in the Cloudflare dashboard may remain empty because the Wrangler configuration now owns the OpenNext build step.
 
-## Runtime variables
+For migration testing, use the `cloudflare-migration` branch before switching production to `main`.
 
-Keep these values configured in the Cloudflare project:
+## Runtime/build variables
+
+Configure these values in the Cloudflare project before the final production cutover:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `NEXT_PUBLIC_COLYSEUS_URL`
 
 The Colyseus URL remains on Railway during this migration.
+
+## Production cutover
+
+Do not point the production domain at Cloudflare until the Workers preview is validated for authentication, character loading, multiplayer connection, PvE/PvP, mobile controls and static assets.
