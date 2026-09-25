@@ -10,14 +10,17 @@ import {
 import { Game, VW, VH, type PlayerState } from '@/game/game';
 import { chip } from '@/game/audio';
 import {
+  consumeAuthRedirect,
   createCharacter,
   getValidSession,
   listCharacters,
+  requestPasswordReset,
   restoreSession,
   signInWithPassword,
   signOut,
   signUpWithPassword,
   updateCharacter,
+  updatePassword,
   type CharacterRow,
   type DsoSession,
 } from '@/lib/supabase';
@@ -77,7 +80,7 @@ export default function Home() {
   const [chatVal, setChatVal] = useState('');
   const [authReady, setAuthReady] = useState(false);
   const [session, setSession] = useState<DsoSession | null>(null);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'signup' | 'forgot' | 'reset'>('login');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -165,11 +168,37 @@ export default function Home() {
 
     void (async () => {
       try {
+        const redirected = await consumeAuthRedirect();
+        if (cancelled) return;
+
+        if (redirected?.error) {
+          setAuthMessage(redirected.error);
+        }
+
+        if (redirected?.session) {
+          if (redirected.type === 'recovery') {
+            setAuthEmail(redirected.session.user.email || '');
+            setAuthMode('reset');
+            setAuthMessage('Digite uma nova senha para concluir a recuperação.');
+            return;
+          }
+
+          await loadAccount(redirected.session);
+          return;
+        }
+
         const restored = await restoreSession();
         if (cancelled) return;
         if (restored) await loadAccount(restored);
       } catch (error) {
         console.error('[supabase] restore session', error);
+        if (!cancelled) {
+          setAuthMessage(
+            error instanceof Error
+              ? error.message
+              : 'Não foi possível restaurar sua sessão.',
+          );
+        }
       } finally {
         if (!cancelled) setAuthReady(true);
       }
@@ -198,8 +227,14 @@ export default function Home() {
 
   const handleAuthSubmit = useCallback(async () => {
     const email = authEmail.trim().toLowerCase();
-    if (!email || authPassword.length < 6) {
-      setAuthMessage('Informe um e-mail válido e uma senha com pelo menos 6 caracteres.');
+
+    if (authMode !== 'reset' && !email) {
+      setAuthMessage('Informe um e-mail válido.');
+      return;
+    }
+
+    if (authMode !== 'forgot' && authPassword.length < 6) {
+      setAuthMessage('A senha precisa ter pelo menos 6 caracteres.');
       return;
     }
 
@@ -210,14 +245,27 @@ export default function Home() {
       if (authMode === 'login') {
         const nextSession = await signInWithPassword(email, authPassword);
         await loadAccount(nextSession);
-      } else {
+      } else if (authMode === 'signup') {
         const result = await signUpWithPassword(email, authPassword);
         if (result.session) {
           await loadAccount(result.session);
         } else {
-          setAuthMessage('Conta criada. Confira seu e-mail para confirmar o cadastro e depois entre no jogo.');
+          setAuthMessage(
+            'Se este e-mail puder ser cadastrado, enviamos uma confirmação. Se você já tinha conta, use ESQUECI MINHA SENHA.',
+          );
           setAuthMode('login');
         }
+      } else if (authMode === 'forgot') {
+        await requestPasswordReset(email);
+        setAuthMessage(
+          'Se existir uma conta com este e-mail, enviamos um link para redefinir a senha.',
+        );
+      } else {
+        await updatePassword(authPassword);
+        const nextSession = await getValidSession();
+        setAuthMessage('');
+        setAuthMode('login');
+        await loadAccount(nextSession);
       }
     } catch (error) {
       setAuthMessage(error instanceof Error ? error.message : 'Falha na autenticação.');
@@ -792,46 +840,56 @@ export default function Home() {
               DRAGON SAGA ONLINE
             </h1>
             <p className="mt-3" style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 8, color: '#a8b0c0', lineHeight: 1.8 }}>
-              {authMode === 'login' ? 'ENTRE NA SUA CONTA' : 'CRIE SUA CONTA'}
+              {authMode === 'login'
+                ? 'ENTRE NA SUA CONTA'
+                : authMode === 'signup'
+                  ? 'CRIE SUA CONTA'
+                  : authMode === 'forgot'
+                    ? 'RECUPERAR SENHA'
+                    : 'NOVA SENHA'}
             </p>
           </div>
 
-          <input
-            type="email"
-            autoComplete="email"
-            value={authEmail}
-            onChange={(event) => setAuthEmail(event.target.value)}
-            placeholder="E-MAIL"
-            required
-            className="outline-none"
-            style={{
-              fontFamily: '"Press Start 2P", monospace',
-              fontSize: 9,
-              color: '#fff',
-              background: '#05070d',
-              border: '2px solid #585878',
-              padding: '12px',
-            }}
-          />
+          {authMode !== 'reset' && (
+            <input
+              type="email"
+              autoComplete="email"
+              value={authEmail}
+              onChange={(event) => setAuthEmail(event.target.value)}
+              placeholder="E-MAIL"
+              required
+              className="outline-none"
+              style={{
+                fontFamily: '"Press Start 2P", monospace',
+                fontSize: 9,
+                color: '#fff',
+                background: '#05070d',
+                border: '2px solid #585878',
+                padding: '12px',
+              }}
+            />
+          )}
 
-          <input
-            type="password"
-            autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
-            value={authPassword}
-            onChange={(event) => setAuthPassword(event.target.value)}
-            placeholder="SENHA"
-            minLength={6}
-            required
-            className="outline-none"
-            style={{
-              fontFamily: '"Press Start 2P", monospace',
-              fontSize: 9,
-              color: '#fff',
-              background: '#05070d',
-              border: '2px solid #585878',
-              padding: '12px',
-            }}
-          />
+          {authMode !== 'forgot' && (
+            <input
+              type="password"
+              autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+              value={authPassword}
+              onChange={(event) => setAuthPassword(event.target.value)}
+              placeholder={authMode === 'reset' ? 'NOVA SENHA' : 'SENHA'}
+              minLength={6}
+              required
+              className="outline-none"
+              style={{
+                fontFamily: '"Press Start 2P", monospace',
+                fontSize: 9,
+                color: '#fff',
+                background: '#05070d',
+                border: '2px solid #585878',
+                padding: '12px',
+              }}
+            />
+          )}
 
           {authMessage && (
             <p style={{ fontFamily: '"Press Start 2P", monospace', fontSize: 7, color: '#f8a0a0', lineHeight: 1.8 }}>
@@ -853,13 +911,48 @@ export default function Home() {
               opacity: authBusy ? 0.7 : 1,
             }}
           >
-            {authBusy ? 'AGUARDE...' : authMode === 'login' ? 'ENTRAR' : 'CRIAR CONTA'}
+            {authBusy
+              ? 'AGUARDE...'
+              : authMode === 'login'
+                ? 'ENTRAR'
+                : authMode === 'signup'
+                  ? 'CRIAR CONTA'
+                  : authMode === 'forgot'
+                    ? 'ENVIAR RECUPERAÇÃO'
+                    : 'SALVAR NOVA SENHA'}
           </button>
+
+          {authMode === 'login' && (
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('forgot');
+                setAuthPassword('');
+                setAuthMessage('');
+              }}
+              style={{
+                fontFamily: '"Press Start 2P", monospace',
+                fontSize: 7,
+                color: '#f8d030',
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '4px 8px',
+              }}
+            >
+              ESQUECI MINHA SENHA
+            </button>
+          )}
 
           <button
             type="button"
             onClick={() => {
-              setAuthMode(authMode === 'login' ? 'signup' : 'login');
+              if (authMode === 'login') {
+                setAuthMode('signup');
+              } else {
+                setAuthMode('login');
+              }
+              setAuthPassword('');
               setAuthMessage('');
             }}
             style={{
@@ -872,7 +965,7 @@ export default function Home() {
               padding: '8px',
             }}
           >
-            {authMode === 'login' ? 'NÃO TENHO CONTA' : 'JÁ TENHO CONTA'}
+            {authMode === 'login' ? 'NÃO TENHO CONTA' : 'VOLTAR AO LOGIN'}
           </button>
         </form>
       </main>

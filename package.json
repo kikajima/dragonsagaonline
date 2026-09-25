@@ -6,7 +6,10 @@
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "cloudflare:check": "bun run build",
+    "cloudflare:deploy": "npx wrangler deploy",
+    "cloudflare:build": "bun add --no-save @opennextjs/cloudflare@1.20.6 && bunx opennextjs-cloudflare build"
   },
   "dependencies": {
     "@colyseus/sdk": "0.18.4",

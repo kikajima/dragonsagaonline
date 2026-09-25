@@ -20,6 +20,11 @@ node_modules
 # production
 /build
 
+# Cloudflare / vinext
+/dist/
+.vinext/
+.wrangler/
+
 # misc
 .DS_Store
 *.pem
