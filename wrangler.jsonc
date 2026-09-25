@@ -24,6 +24,6 @@
     "enabled": true
   },
   "build": {
-    "command": "bunx @opennextjs/cloudflare@1.20.6 build"
+    "command": "bun add --no-save @opennextjs/cloudflare@1.20.6 && bunx opennextjs-cloudflare build"
   }
 }
