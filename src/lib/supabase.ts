@@ -54,14 +54,49 @@ type AuthPayload = {
   message?: string;
   error?: string;
   error_description?: string;
+  msg?: string;
+  code?: string;
 };
 
 let currentSession: DsoSession | null = null;
 
 function authError(payload: AuthPayload, fallback: string): Error {
+  const code = payload.code || payload.error;
+
+  if (code === 'invalid_credentials') {
+    return new Error('E-mail ou senha incorretos.');
+  }
+  if (code === 'email_not_confirmed') {
+    return new Error('Confirme seu e-mail antes de entrar.');
+  }
+  if (code === 'user_already_exists') {
+    return new Error('Já existe uma conta com este e-mail.');
+  }
+
   return new Error(
-    payload.error_description || payload.message || payload.error || fallback,
+    payload.error_description ||
+      payload.message ||
+      payload.msg ||
+      payload.error ||
+      fallback,
   );
+}
+
+function browserRedirectUrl(): string | null {
+  if (typeof window === 'undefined') return null;
+  return `${window.location.origin}/`;
+}
+
+function withRedirect(path: string): string {
+  const redirectTo = browserRedirectUrl();
+  if (!redirectTo) return path;
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}redirect_to=${encodeURIComponent(redirectTo)}`;
+}
+
+function clearAuthRedirectFromUrl() {
+  if (typeof window === 'undefined') return;
+  window.history.replaceState({}, document.title, window.location.pathname);
 }
 
 function saveSession(session: DsoSession | null) {
@@ -216,7 +251,7 @@ export async function signUpWithPassword(
   email: string,
   password: string,
 ) {
-  const response = await authFetch('/signup', {
+  const response = await authFetch(withRedirect('/signup'), {
     method: 'POST',
     body: JSON.stringify({ email, password }),
   });
@@ -234,6 +269,89 @@ export async function signUpWithPassword(
     user: payload.user || null,
     requiresEmailConfirmation: !session,
   };
+}
+
+export async function requestPasswordReset(email: string): Promise<void> {
+  const response = await authFetch(withRedirect('/recover'), {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as AuthPayload;
+
+  if (!response.ok) {
+    throw authError(payload, 'Não foi possível enviar a recuperação de senha.');
+  }
+}
+
+export async function consumeAuthRedirect(): Promise<{
+  session: DsoSession | null;
+  type: string | null;
+  error: string | null;
+} | null> {
+  if (typeof window === 'undefined') return null;
+
+  const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const query = new URLSearchParams(window.location.search);
+  const getParam = (name: string) => fragment.get(name) || query.get(name);
+
+  const errorDescription = getParam('error_description') || getParam('error');
+  const type = getParam('type');
+
+  if (errorDescription) {
+    clearAuthRedirectFromUrl();
+    return {
+      session: null,
+      type,
+      error: decodeURIComponent(errorDescription.replace(/\+/g, ' ')),
+    };
+  }
+
+  const accessToken = getParam('access_token');
+  const refreshToken = getParam('refresh_token');
+  if (!accessToken || !refreshToken) return null;
+
+  const expiresIn = Number(getParam('expires_in') || 3600);
+  const response = await authFetch('/user', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const payload = (await response.json().catch(() => ({}))) as DsoAuthUser & AuthPayload;
+
+  if (!response.ok || !payload.id) {
+    clearAuthRedirectFromUrl();
+    return {
+      session: null,
+      type,
+      error: authError(payload, 'Não foi possível concluir a autenticação.').message,
+    };
+  }
+
+  const session: DsoSession = {
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    expires_at: Math.floor(Date.now() / 1000) + expiresIn,
+    user: {
+      id: payload.id,
+      email: payload.email,
+    },
+  };
+
+  saveSession(session);
+  clearAuthRedirectFromUrl();
+  return { session, type, error: null };
+}
+
+export async function updatePassword(password: string): Promise<void> {
+  const session = await requireSession();
+  const response = await authFetch('/user', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${session.access_token}` },
+    body: JSON.stringify({ password }),
+  });
+  const payload = (await response.json().catch(() => ({}))) as AuthPayload;
+
+  if (!response.ok) {
+    throw authError(payload, 'Não foi possível alterar a senha.');
+  }
 }
 
 export async function signOut() {
