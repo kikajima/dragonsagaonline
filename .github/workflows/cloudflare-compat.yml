@@ -28,8 +28,8 @@ jobs:
       - name: Install existing dependencies
         run: bun install --frozen-lockfile
 
-      - name: Check vinext compatibility
-        run: bunx vinext check
-
       - name: Verify current Next.js build
         run: bun run build
+
+      - name: Verify Cloudflare OpenNext build
+        run: bunx @opennextjs/cloudflare@1.20.6 build
