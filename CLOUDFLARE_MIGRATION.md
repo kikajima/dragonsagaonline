@@ -50,3 +50,5 @@ The Colyseus URL remains on Railway during this migration.
 ## Production cutover
 
 Do not point the production domain at Cloudflare until the Workers preview is validated for authentication, character loading, multiplayer connection, PvE/PvP, mobile controls and static assets.
+
+Branch-control verification trigger: Cloudflare production branch is `cloudflare-migration`.
